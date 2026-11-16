@@ -6,6 +6,7 @@ import { workerApi } from "./routes/worker.js";
 import { tick } from "./jobs.js";
 import { finalizeExpiredRun } from "./ingest.js";
 import { completeHooks, markProbeFailed } from "./hooks.js";
+import { processFieldExtractions } from "./fields.js";
 
 export { SetupWorkflow } from "./ai/setup.js";
 
@@ -26,11 +27,14 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 async function runTick(env: Env) {
   const hooks = completeHooks(env);
-  return tick(
+  const r = await tick(
     env,
     (runId) => finalizeExpiredRun(env, runId, hooks),
     (probeId, err) => markProbeFailed(env, probeId, err),
   );
+  // セットのカスタムフィールド：未抽出の item を少しずつ AI で抽出
+  const fields = await processFieldExtractions(env, { limit: 24 }).catch((e) => ({ error: String(e) }));
+  return { ...r, fields };
 }
 
 export default {

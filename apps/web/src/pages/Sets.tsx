@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { useApi } from "../hooks.js";
-import { ItemList } from "./Items.js";
+import { ItemList, type FieldDef } from "./Items.js";
 
 export interface SetRow {
   id: string;
@@ -140,7 +140,8 @@ export function SetPage() {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"items" | "members">("items");
+  const [tab, setTab] = useState<"items" | "members" | "fields">("items");
+  const [params, setParams] = useState<Record<string, string>>({});
   if (error) return <p className="error">{error === "not_found" ? "セットが見つかりません" : error}</p>;
   if (!data) return <p className="muted">読み込み中…</p>;
   const set = data.set;
@@ -221,10 +222,17 @@ export function SetPage() {
         <button className={tab === "members" ? "on" : ""} onClick={() => setTab("members")}>
           購読先（{data.members.length}）
         </button>
+        <button className={tab === "fields" ? "on" : ""} onClick={() => setTab("fields")}>
+          カスタムフィールド（{data.fields.length}）
+        </button>
       </div>
+      {tab === "fields" && <FieldsEditor setId={set.id} fields={data.fields} extraction={data.extraction} reload={reload} />}
       {tab === "items" &&
         (data.members.length ? (
-          <ItemList key={set.id} setId={set.id} />
+          <>
+            {data.fields.length > 0 && <FieldFilters setId={set.id} fields={data.fields} value={params} onChange={setParams} />}
+            <ItemList key={set.id + JSON.stringify(params)} setId={set.id} params={params} fields={data.fields} />
+          </>
         ) : (
           <p className="muted">
             購読先がまだありません。
@@ -328,5 +336,255 @@ export function SetMembership({ subscriptionId, setIds, onChange }: { subscripti
         </button>
       )}
     </div>
+  );
+}
+
+const TYPE_LABEL: Record<FieldDef["type"], string> = { text: "テキスト", list: "複数値", date: "日付", number: "数値", boolean: "はい/いいえ" };
+const FIELD_ERROR: Record<string, string> = {
+  label_required: "表示名を入力してください",
+  bad_key: "キーは英小文字で始まる英数字と _（40文字まで）",
+  key_taken: "同じキーのフィールドがあります",
+  bad_type: "型を選んでください",
+  too_many_fields: "フィールドは20個までです",
+};
+
+function FieldForm({ initial, onSubmit, onCancel, submitLabel }: { initial?: Partial<FieldDef>; onSubmit: (f: Partial<FieldDef>) => Promise<void>; onCancel?: () => void; submitLabel: string }) {
+  const [f, setF] = useState<Partial<FieldDef>>(initial ?? { type: "text", label: "", key: "", description: "" });
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <form
+      className="field-form"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        try {
+          await onSubmit(f);
+          setErr(null);
+        } catch (e) {
+          setErr(FIELD_ERROR[(e as Error).message] ?? (e as Error).message);
+        }
+      }}
+    >
+      <input type="text" placeholder="表示名（例：開始日）" value={f.label ?? ""} maxLength={40} onChange={(e) => setF({ ...f, label: e.target.value })} />
+      <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value as FieldDef["type"] })}>
+        {Object.entries(TYPE_LABEL).map(([k, l]) => (
+          <option key={k} value={k}>
+            {l}
+          </option>
+        ))}
+      </select>
+      <input type="text" placeholder="キー（例：start_date・省略可）" value={f.key ?? ""} maxLength={40} className="mono" onChange={(e) => setF({ ...f, key: e.target.value })} />
+      <input
+        type="text"
+        className="wide"
+        placeholder="AIへの説明（例：展覧会の会期の開始日。会期が書かれていなければ空）"
+        value={f.description ?? ""}
+        maxLength={500}
+        onChange={(e) => setF({ ...f, description: e.target.value })}
+      />
+      <div className="row">
+        <button className="primary" disabled={!f.label?.trim()}>
+          {submitLabel}
+        </button>
+        {onCancel && (
+          <button type="button" onClick={onCancel}>
+            取消
+          </button>
+        )}
+        {err && <span className="error small">{err}</span>}
+      </div>
+    </form>
+  );
+}
+
+function FieldsEditor({ setId, fields, extraction, reload }: { setId: string; fields: FieldDef[]; extraction: { total: number; done: number; errors: number; ai: boolean }; reload: () => Promise<unknown> }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const save = async (path: string, method: string, f: Partial<FieldDef>) => {
+    const { id: _id, ...body } = f;
+    await api(path, { method, json: { ...body, key: body.key || undefined } });
+    setEditing(null);
+    void reload();
+  };
+  const pending = extraction.total - extraction.done - extraction.errors;
+  return (
+    <div>
+      <div className="panel">
+        <p className="small muted" style={{ marginTop: 0 }}>
+          セット内の item の本文（リンク先から取得した本文を含む）から、生成AIでフィールドの値を取り出して保存します。値は item 一覧での絞り込み・並べ替えに使えます。フィールドを追加・変更すると、セット内の item を取り直します。
+        </p>
+        {fields.length > 0 && (
+          <div className="row small">
+            <span>
+              抽出済み {extraction.done} / {extraction.total} 件{extraction.errors > 0 && `・失敗 ${extraction.errors} 件`}
+              {pending > 0 && `・未抽出 ${pending} 件（5分ごとに少しずつ進みます）`}
+            </span>
+            <span className="spacer" />
+            {extraction.ai ? (
+              <button
+                disabled={pending + extraction.errors === 0}
+                onClick={async () => {
+                  await api(`/sets/${setId}/fields/extract`, { method: "POST" });
+                  setMsg("抽出を開始しました。しばらくして再読み込みしてください。");
+                  setTimeout(() => void reload(), 15000);
+                }}
+              >
+                今すぐ抽出
+              </button>
+            ) : (
+              <span className="error">GEMINI_API_KEY が未設定のため抽出できません</span>
+            )}
+          </div>
+        )}
+        {msg && <p className="small">{msg}</p>}
+      </div>
+      <div className="panel">
+        <table className="small">
+          <thead>
+            <tr>
+              <th>表示名</th>
+              <th>型</th>
+              <th>キー</th>
+              <th>AIへの説明</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map((f) =>
+              editing === f.id ? (
+                <tr key={f.id}>
+                  <td colSpan={5}>
+                    <FieldForm initial={f} submitLabel="保存" onCancel={() => setEditing(null)} onSubmit={(v) => save(`/sets/${setId}/fields/${f.id}`, "PATCH", v)} />
+                  </td>
+                </tr>
+              ) : (
+                <tr key={f.id}>
+                  <td>{f.label}</td>
+                  <td>{TYPE_LABEL[f.type]}</td>
+                  <td className="mono">{f.key}</td>
+                  <td className="muted">{f.description || "—"}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button onClick={() => setEditing(f.id)}>編集</button>{" "}
+                    <button
+                      className="danger"
+                      onClick={async () => {
+                        if (!confirm(`フィールド「${f.label}」と保存済みの値を削除しますか？`)) return;
+                        await api(`/sets/${setId}/fields/${f.id}`, { method: "DELETE" });
+                        void reload();
+                      }}
+                    >
+                      削除
+                    </button>
+                  </td>
+                </tr>
+              ),
+            )}
+          </tbody>
+        </table>
+        {fields.length === 0 && <p className="muted small">フィールドはまだありません。例：美術館なら「開始日」「終了日」（日付）、動物園なら「動物」（複数値）。</p>}
+        <h3>フィールドを追加</h3>
+        <FieldForm key={fields.length} submitLabel="追加" onSubmit={(v) => save(`/sets/${setId}/fields`, "POST", v)} />
+      </div>
+    </div>
+  );
+}
+
+const today = () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+
+/** カスタムフィールドでの絞り込み・並べ替え（f.<key>[.op] / sort） */
+function FieldFilters({ setId, fields, value, onChange }: { setId: string; fields: FieldDef[]; value: Record<string, string>; onChange: (v: Record<string, string>) => void }) {
+  const [draft, setDraft] = useState(value);
+  const set = (k: string, v: string) => setDraft((d) => ({ ...d, [k]: v }));
+  const sortable = fields.filter((f) => f.type !== "list");
+  const active = Object.values(value).some(Boolean);
+  return (
+    <form
+      className="panel field-filters"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onChange(Object.fromEntries(Object.entries(draft).filter(([, v]) => v)));
+      }}
+    >
+      {fields.map((f) => (
+        <label key={f.key} className="field-filter">
+          <span className="muted small">{f.label}</span>
+          {f.type === "date" || f.type === "number" ? (
+            <span className="row">
+              <input type={f.type === "date" ? "date" : "number"} value={draft[`f.${f.key}.gte`] ?? ""} onChange={(e) => set(`f.${f.key}.gte`, e.target.value)} title="以上（以降）" />
+              〜
+              <input type={f.type === "date" ? "date" : "number"} value={draft[`f.${f.key}.lte`] ?? ""} onChange={(e) => set(`f.${f.key}.lte`, e.target.value)} title="以下（以前）" />
+            </span>
+          ) : f.type === "list" ? (
+            <ListValueSelect setId={setId} field={f} value={draft[`f.${f.key}`] ?? ""} onChange={(v) => set(`f.${f.key}`, v)} />
+          ) : f.type === "boolean" ? (
+            <select value={draft[`f.${f.key}`] ?? ""} onChange={(e) => set(`f.${f.key}`, e.target.value)}>
+              <option value="">指定なし</option>
+              <option value="true">はい</option>
+              <option value="false">いいえ</option>
+            </select>
+          ) : (
+            <input type="text" placeholder="含む" value={draft[`f.${f.key}.contains`] ?? ""} onChange={(e) => set(`f.${f.key}.contains`, e.target.value)} />
+          )}
+        </label>
+      ))}
+      {sortable.length > 0 && (
+        <label className="field-filter">
+          <span className="muted small">並べ替え</span>
+          <select value={draft.sort ?? ""} onChange={(e) => set("sort", e.target.value)}>
+            <option value="">検出の新しい順</option>
+            {sortable.flatMap((f) => [
+              <option key={f.key} value={f.key}>
+                {f.label}（昇順）
+              </option>,
+              <option key={`-${f.key}`} value={`-${f.key}`}>
+                {f.label}（降順）
+              </option>,
+            ])}
+          </select>
+        </label>
+      )}
+      <div className="row">
+        <button className="primary">絞り込む</button>
+        {fields.some((f) => f.type === "date") && (
+          <button
+            type="button"
+            title="開始系の日付 ≤ 今日 ≤ 終了系の日付（日付フィールドが2つ以上のとき、先頭を開始・2番目を終了とみなします）"
+            onClick={() => {
+              const dates = fields.filter((f) => f.type === "date");
+              const t = today();
+              const next = { ...draft, [`f.${dates[0].key}.lte`]: t, ...(dates[1] ? { [`f.${dates[1].key}.gte`]: t } : {}) };
+              setDraft(next);
+              onChange(Object.fromEntries(Object.entries(next).filter(([, v]) => v)));
+            }}
+          >
+            今日にあてはまる
+          </button>
+        )}
+        {active && (
+          <button
+            type="button"
+            onClick={() => {
+              setDraft({});
+              onChange({});
+            }}
+          >
+            条件をクリア
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+function ListValueSelect({ setId, field, value, onChange }: { setId: string; field: FieldDef; value: string; onChange: (v: string) => void }) {
+  const { data } = useApi<{ values: { value: string; count: number }[] }>(`/sets/${setId}/fields/${field.key}/values`);
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">指定なし</option>
+      {data?.values.map((v) => (
+        <option key={v.value} value={v.value}>
+          {v.value}（{v.count}）
+        </option>
+      ))}
+    </select>
   );
 }

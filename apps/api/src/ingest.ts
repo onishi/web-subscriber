@@ -171,6 +171,8 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
       stmts.push(
         env.DB.prepare("UPDATE items SET detail_json = COALESCE(?, detail_json), detail_scheme = ?, detail_status = ?, detail_checked_at = ? WHERE id = ?").bind(detailJson, det.scheme, det.ok ? "ok" : "failed", now, ex.id),
       );
+    // 本文（一覧の内容・詳細ページの値）が変わったらカスタムフィールドを取り直す
+    if (detailJson || ex.content_hash !== it.content_hash) stmts.push(env.DB.prepare("DELETE FROM item_field_extractions WHERE item_id = ?").bind(ex.id));
     if (feedImage) stmts.push(env.DB.prepare("UPDATE items SET image_url = ?, image_source = 'feed' WHERE id = ? AND image_url IS NOT ?").bind(feedImage, ex.id, feedImage));
     else if (it.image_lookup)
       stmts.push(

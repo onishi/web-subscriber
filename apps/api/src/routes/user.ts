@@ -5,6 +5,7 @@ import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt } from "../env
 import { type AppVars } from "../auth.js";
 import { enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
 import { startSession } from "../ai/setup.js";
+import { FIELD_KEY_RE, FIELD_TYPES, buildFieldQuery, displayValue, loadFields, processFieldExtractions, refreshFieldsHash, type FieldType } from "../fields.js";
 
 export const userApi = new Hono<{ Bindings: Env; Variables: AppVars }>();
 
@@ -335,7 +336,19 @@ userApi.get("/items", async (c) => {
   if (view === "baseline") where.push("i.is_baseline = 1");
   if (view === "updated") where.push("i.last_changed_at IS NOT NULL");
   if (unread) where.push("rs.read_at IS NULL AND i.is_baseline = 0");
-  const order = view === "updated" ? "i.last_changed_at DESC" : view === "new" ? "COALESCE(i.last_changed_at, i.first_seen_at) DESC, i.id DESC" : "i.first_seen_at DESC, COALESCE(i.published_sort, '') DESC, i.id DESC";
+  let order = view === "updated" ? "i.last_changed_at DESC" : view === "new" ? "COALESCE(i.last_changed_at, i.first_seen_at) DESC, i.id DESC" : "i.first_seen_at DESC, COALESCE(i.published_sort, '') DESC, i.id DESC";
+  // セットのカスタムフィールドによる絞り込み・並べ替え
+  const fields = setId ? await loadFields(c.env, setId) : [];
+  if (setId) {
+    const fq = buildFieldQuery(fields, new URL(c.req.url).searchParams);
+    if ("error" in fq) return c.json({ error: fq.error }, 400);
+    where.push(...fq.where);
+    args.push(...fq.args);
+    if (fq.order) {
+      order = `${fq.order}, ${order}`;
+      args.push(...fq.orderArgs);
+    }
+  }
   args.push(limit + 1, offset);
   const rs = await c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.published_sort, i.is_baseline, i.image_url, i.first_seen_at, i.last_seen_at, i.last_changed_at, i.revision_count,
@@ -350,7 +363,7 @@ userApi.get("/items", async (c) => {
   )
     .bind(...args)
     .all<Record<string, unknown>>();
-  const items = rs.results.slice(0, limit).map((r) => ({
+  const items: Record<string, unknown>[] = rs.results.slice(0, limit).map((r) => ({
     ...r,
     published_at: json(r.published_at as string, null),
     updated_at: json(r.updated_at as string, null),
@@ -359,6 +372,22 @@ userApi.get("/items", async (c) => {
     // 既読後に内容が更新された／更新済みitem：「更新」印
     updated_mark: !!r.last_changed_at && (!r.read_at || String(r.last_changed_at) > String(r.read_at)),
   }));
+  // セット表示ではカスタムフィールドの値を付ける
+  if (setId && fields.length && items.length) {
+    const vals = await c.env.DB.prepare(`SELECT item_id, field_id, ord, value_text, value_num, value_date FROM item_field_values WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")}) ORDER BY ord`)
+      .bind(setId, ...items.map((i) => i.id))
+      .all<{ item_id: string; field_id: string; ord: number; value_text: string | null; value_num: number | null; value_date: string | null }>();
+    const byId = new Map(fields.map((f) => [f.id, f]));
+    const per = new Map<string, Record<string, unknown[]>>();
+    for (const v of vals.results) {
+      const f = byId.get(v.field_id);
+      if (!f) continue;
+      const m = per.get(v.item_id) ?? {};
+      (m[f.key] ??= []).push(displayValue(f.type, v));
+      per.set(v.item_id, m);
+    }
+    return c.json({ items: items.map((i) => ({ ...i, fields: per.get(i.id as string) ?? {} })), has_more: rs.results.length > limit, next_offset: offset + limit });
+  }
   return c.json({ items, has_more: rs.results.length > limit, next_offset: offset + limit });
 });
 
@@ -383,8 +412,20 @@ userApi.get("/items/:id", async (c) => {
   };
   const revisions = await c.env.DB.prepare("SELECT id, run_id, change_kind, created_at, data_json FROM item_revisions WHERE item_id = ? ORDER BY created_at DESC LIMIT 20").bind(it.id).all<Record<string, string>>();
   const rs = await c.env.DB.prepare("SELECT read_at FROM reading_states WHERE user_id = ? AND item_id = ?").bind(uid, it.id).first<{ read_at: string }>();
+  const cf = await c.env.DB.prepare(
+    `SELECT st.id AS set_id, st.name AS set_name, f.key, f.label, f.type, v.value_text, v.value_num, v.value_date
+     FROM item_field_values v JOIN set_fields f ON f.id = v.field_id JOIN sets st ON st.id = v.set_id WHERE v.item_id = ? ORDER BY st.position, f.position, v.ord`,
+  )
+    .bind(it.id)
+    .all<{ set_id: string; set_name: string; key: string; label: string; type: FieldType; value_text: string | null; value_num: number | null; value_date: string | null }>();
+  const customFields: { set_id: string; set_name: string; key: string; label: string; type: string; values: unknown[] }[] = [];
+  for (const r of cf.results) {
+    let e = customFields.find((x) => x.set_id === r.set_id && x.key === r.key);
+    if (!e) customFields.push((e = { set_id: r.set_id, set_name: r.set_name, key: r.key, label: r.label, type: r.type, values: [] }));
+    e.values.push(displayValue(r.type, r));
+  }
   const { data_json: _d, detail_json: _dj, ...meta } = it;
-  return c.json({ ...meta, data, list_data: detailData ? listData : undefined, detail_data: detailData, effective, read_at: rs?.read_at ?? null, revisions: revisions.results.map((r) => ({ ...r, data: json(r.data_json, null), data_json: undefined })) });
+  return c.json({ ...meta, custom_fields: customFields, data, list_data: detailData ? listData : undefined, detail_data: detailData, effective, read_at: rs?.read_at ?? null, revisions: revisions.results.map((r) => ({ ...r, data: json(r.data_json, null), data_json: undefined })) });
 });
 
 userApi.put("/items/:id/read", async (c) => {
@@ -459,7 +500,17 @@ userApi.get("/sets/:id", async (c) => {
   )
     .bind(st.id)
     .all();
-  return c.json({ set: st, members: members.results });
+  const fields = await loadFields(c.env, st.id as string);
+  const status = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+       SUM(CASE WHEN e.status = 'ok' AND e.schema_hash = ? THEN 1 ELSE 0 END) AS done,
+       SUM(CASE WHEN e.status = 'error' AND e.schema_hash = ? THEN 1 ELSE 0 END) AS errors
+     FROM items i JOIN set_members m ON m.subscription_id = i.subscription_id AND m.set_id = ?
+     LEFT JOIN item_field_extractions e ON e.item_id = i.id AND e.set_id = m.set_id`,
+  )
+    .bind(st.fields_hash ?? "", st.fields_hash ?? "", st.id)
+    .first<{ total: number; done: number; errors: number }>();
+  return c.json({ set: st, members: members.results, fields, extraction: { total: status?.total ?? 0, done: status?.done ?? 0, errors: status?.errors ?? 0, ai: !!c.env.GEMINI_API_KEY } });
 });
 
 userApi.patch("/sets/:id", async (c) => {
@@ -480,7 +531,13 @@ userApi.patch("/sets/:id", async (c) => {
 /** セットを削除（購読先・item はそのまま） */
 userApi.delete("/sets/:id", async (c) => {
   const id = c.req.param("id");
-  await c.env.DB.batch([c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ?").bind(id), c.env.DB.prepare("DELETE FROM sets WHERE id = ?").bind(id)]);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM item_field_values WHERE set_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM item_field_extractions WHERE set_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM set_fields WHERE set_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM sets WHERE id = ?").bind(id),
+  ]);
   return c.json({ ok: true });
 });
 
@@ -494,6 +551,109 @@ userApi.put("/sets/:id/members/:subId", async (c) => {
 
 userApi.delete("/sets/:id/members/:subId", async (c) => {
   const { id, subId } = c.req.param();
-  await c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ? AND subscription_id = ?").bind(id, subId).run();
+  const ofSub = "SELECT id FROM items WHERE subscription_id = ?";
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ? AND subscription_id = ?").bind(id, subId),
+    c.env.DB.prepare(`DELETE FROM item_field_values WHERE set_id = ? AND item_id IN (${ofSub})`).bind(id, subId),
+    c.env.DB.prepare(`DELETE FROM item_field_extractions WHERE set_id = ? AND item_id IN (${ofSub})`).bind(id, subId),
+  ]);
   return c.json({ ok: true });
+});
+
+// ---- セットのカスタムフィールド ----
+function fieldInput(b: Record<string, unknown>, partial: boolean): { label?: string; key?: string; type?: FieldType; description?: string } | { error: string } {
+  const out: { label?: string; key?: string; type?: FieldType; description?: string } = {};
+  if (b.label !== undefined || !partial) {
+    const label = typeof b.label === "string" ? b.label.trim().slice(0, 40) : "";
+    if (!label) return { error: "label_required" };
+    out.label = label;
+  }
+  if (b.key !== undefined && b.key !== "") {
+    if (typeof b.key !== "string" || !FIELD_KEY_RE.test(b.key)) return { error: "bad_key" };
+    out.key = b.key;
+  }
+  if (b.type !== undefined || !partial) {
+    if (!(FIELD_TYPES as readonly unknown[]).includes(b.type)) return { error: "bad_type" };
+    out.type = b.type as FieldType;
+  }
+  if (b.description !== undefined) out.description = typeof b.description === "string" ? b.description.trim().slice(0, 500) : "";
+  return out;
+}
+
+userApi.post("/sets/:id/fields", async (c) => {
+  const setId = c.req.param("id");
+  if (!(await c.env.DB.prepare("SELECT 1 FROM sets WHERE id = ?").bind(setId).first())) return c.json({ error: "not_found" }, 404);
+  const f = fieldInput(await c.req.json(), false);
+  if ("error" in f) return c.json(f, 400);
+  const existing = await loadFields(c.env, setId);
+  if (existing.length >= 20) return c.json({ error: "too_many_fields" }, 400);
+  let key = f.key;
+  if (!key) for (let n = existing.length + 1; !key || existing.some((e) => e.key === key); n++) key = `field_${n}`;
+  if (existing.some((e) => e.key === key)) return c.json({ error: "key_taken" }, 409);
+  const id = newId();
+  const now = nowIso();
+  await c.env.DB.prepare("INSERT INTO set_fields (id, set_id, key, label, type, description, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, setId, key, f.label, f.type, f.description ?? "", existing.length, now, now)
+    .run();
+  await refreshFieldsHash(c.env, setId);
+  return c.json({ field: { id, key } }, 201);
+});
+
+userApi.patch("/sets/:id/fields/:fieldId", async (c) => {
+  const { id: setId, fieldId } = c.req.param();
+  const cur = await c.env.DB.prepare("SELECT * FROM set_fields WHERE id = ? AND set_id = ?").bind(fieldId, setId).first<Record<string, unknown>>();
+  if (!cur) return c.json({ error: "not_found" }, 404);
+  const f = fieldInput(await c.req.json(), true);
+  if ("error" in f) return c.json(f, 400);
+  if (f.key && f.key !== cur.key && (await c.env.DB.prepare("SELECT 1 FROM set_fields WHERE set_id = ? AND key = ?").bind(setId, f.key).first())) return c.json({ error: "key_taken" }, 409);
+  const stmts = [
+    c.env.DB.prepare("UPDATE set_fields SET label = ?, key = ?, type = ?, description = ?, updated_at = ? WHERE id = ?").bind(
+      f.label ?? cur.label,
+      f.key ?? cur.key,
+      f.type ?? cur.type,
+      f.description ?? cur.description,
+      nowIso(),
+      fieldId,
+    ),
+  ];
+  // 型が変わったら保存済みの値は使えない
+  if (f.type && f.type !== cur.type) stmts.push(c.env.DB.prepare("DELETE FROM item_field_values WHERE field_id = ?").bind(fieldId));
+  await c.env.DB.batch(stmts);
+  await refreshFieldsHash(c.env, setId);
+  return c.json({ ok: true });
+});
+
+userApi.delete("/sets/:id/fields/:fieldId", async (c) => {
+  const { id: setId, fieldId } = c.req.param();
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM item_field_values WHERE field_id = ?").bind(fieldId),
+    c.env.DB.prepare("DELETE FROM set_fields WHERE id = ? AND set_id = ?").bind(fieldId, setId),
+  ]);
+  // 削除だけなら残りのフィールドの抽出結果はそのまま使える
+  await refreshFieldsHash(c.env, setId, { onlyRemoved: true });
+  return c.json({ ok: true });
+});
+
+/** 未抽出の item をすぐに抽出（以降は Cron で少しずつ進む） */
+userApi.post("/sets/:id/fields/extract", async (c) => {
+  if (!c.env.GEMINI_API_KEY) return c.json({ error: "ai_not_configured" }, 400);
+  const setId = c.req.param("id");
+  c.executionCtx.waitUntil(processFieldExtractions(c.env, { setId, limit: 40 }));
+  return c.json({ ok: true }, 202);
+});
+
+/** フィールドの値の一覧（text/list は値ごとの件数、date/number は範囲）。検索 UI の候補に使う */
+userApi.get("/sets/:id/fields/:key/values", async (c) => {
+  const { id: setId, key } = c.req.param();
+  const f = await c.env.DB.prepare("SELECT id, type FROM set_fields WHERE set_id = ? AND key = ?").bind(setId, key).first<{ id: string; type: FieldType }>();
+  if (!f) return c.json({ error: "not_found" }, 404);
+  if (f.type === "text" || f.type === "list") {
+    const rs = await c.env.DB.prepare("SELECT value_text AS value, COUNT(DISTINCT item_id) AS count FROM item_field_values WHERE field_id = ? AND value_text IS NOT NULL GROUP BY value_text ORDER BY count DESC, value_text LIMIT 200")
+      .bind(f.id)
+      .all();
+    return c.json({ type: f.type, values: rs.results });
+  }
+  const col = f.type === "date" ? "value_date" : "value_num";
+  const r = await c.env.DB.prepare(`SELECT MIN(${col}) AS min, MAX(${col}) AS max, COUNT(DISTINCT item_id) AS count FROM item_field_values WHERE field_id = ?`).bind(f.id).first();
+  return c.json({ type: f.type, ...r });
 });

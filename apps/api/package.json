@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply web-subscriber-db --local",
     "migrate:remote": "wrangler d1 migrations apply web-subscriber-db --remote",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run"
   },
   "dependencies": {
     "@google/genai": "2.32.0",

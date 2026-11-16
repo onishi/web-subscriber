@@ -20,11 +20,38 @@ interface ItemRow {
   revision_count: number;
   is_read: boolean;
   updated_mark: boolean;
+  /** セット表示時のカスタムフィールドの値 */
+  fields?: Record<string, (string | number | boolean | null)[]>;
 }
+
+export interface FieldDef {
+  id: string;
+  key: string;
+  label: string;
+  type: "text" | "list" | "date" | "number" | "boolean";
+  description: string;
+}
+
+export const fmtFieldValue = (type: string, v: unknown) => (type === "boolean" ? (v ? "はい" : "いいえ") : String(v));
 
 const stripTags = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-export function ItemList({ subscriptionId, setId, view: initialView = "new", showViewTabs = false }: { subscriptionId?: string; setId?: string; view?: string; showViewTabs?: boolean }) {
+export function ItemList({
+  subscriptionId,
+  setId,
+  view: initialView = "new",
+  showViewTabs = false,
+  params,
+  fields,
+}: {
+  subscriptionId?: string;
+  setId?: string;
+  view?: string;
+  showViewTabs?: boolean;
+  /** 追加の検索条件（カスタムフィールド f.* / sort） */
+  params?: Record<string, string>;
+  fields?: FieldDef[];
+}) {
   const [view, setView] = useState(initialView);
   const [unread, setUnread] = useState(false);
   const [offset, setOffset] = useState(0);
@@ -33,6 +60,7 @@ export function ItemList({ subscriptionId, setId, view: initialView = "new", sho
   if (unread) q.set("unread", "1");
   if (subscriptionId) q.set("subscription_id", subscriptionId);
   if (setId) q.set("set_id", setId);
+  for (const [k, v] of Object.entries(params ?? {})) if (v) q.set(k, v);
   const { data, error, reload, setData } = useApi<{ items: ItemRow[]; has_more: boolean }>(`/items?${q}`);
 
   const markRead = async (it: ItemRow, read: boolean) => {
@@ -89,6 +117,17 @@ export function ItemList({ subscriptionId, setId, view: initialView = "new", sho
                 <span className="title">{it.title_text || it.primary_link || "(無題)"}</span>
               </div>
               {it.summary && <div className="muted small">{stripTags(it.summary).slice(0, 140)}</div>}
+              {fields && it.fields && Object.keys(it.fields).length > 0 && (
+                <div className="row small field-values">
+                  {fields
+                    .filter((f) => it.fields![f.key]?.length)
+                    .map((f) => (
+                      <span key={f.key} className="field-value">
+                        <span className="muted">{f.label}</span> {it.fields![f.key].map((v) => fmtFieldValue(f.type, v)).join("・")}
+                      </span>
+                    ))}
+                </div>
+              )}
             </div>
             <div className="small muted" style={{ textAlign: "right" }}>
               {!subscriptionId && (
@@ -154,6 +193,14 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
         <button onClick={onUnread}>未読に戻す</button>
       </div>
       <div className="kv small" style={{ margin: "10px 0" }}>
+        {data.custom_fields?.map((f: any) => (
+          <div key={`${f.set_id}:${f.key}`} style={{ display: "contents" }}>
+            <div>
+              {f.label} <span className="muted">（{f.set_name}）</span>
+            </div>
+            <div>{f.values.map((v: unknown) => fmtFieldValue(f.type, v)).join("・")}</div>
+          </div>
+        ))}
         {data.detail_checked_at && (
           <>
             <div>リンク先</div>

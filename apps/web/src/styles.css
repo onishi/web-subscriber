@@ -51,6 +51,14 @@ nav.side .nav-heading { display: flex; align-items: center; justify-content: spa
 nav.side .nav-heading a.nav-sub { display: inline; padding: 0; font-size: 12px; color: var(--muted); }
 nav.side a.nav-set { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
 nav.side a.nav-set .count { color: var(--accent); font-size: 12px; font-weight: 600; }
+.field-values { gap: 10px; margin-top: 2px; }
+.field-value { white-space: nowrap; }
+.field-form { display: grid; grid-template-columns: 1fr 120px 1fr; gap: 6px; }
+.field-form .wide, .field-form > .row { grid-column: 1 / -1; }
+.field-filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
+.field-filter { display: flex; flex-direction: column; gap: 2px; }
+.field-filter input[type=date], .field-filter input[type=number] { width: 140px; }
+@media (max-width: 600px) { .field-form { grid-template-columns: 1fr; } }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); }
 .chip img { width: 22px; height: 22px; margin-left: -8px; border-radius: 50%; object-fit: cover; }
 main { padding: 20px 24px; max-width: 1200px; width: 100%; }
