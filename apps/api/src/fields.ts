@@ -158,32 +158,47 @@ export function itemText(row: { data_json: string; detail_json: string | null })
   return parts.join("\n").slice(0, TEXT_LIMIT);
 }
 
+/**
+ * まとめて抽出する。item は「item_1」形式の ID で識別させ（番号のずれで別の item に値が入らないよう enum で固定）、
+ * 返ってこなかった item は呼び出し側で1件ずつ取り直す。
+ */
 async function extractBatch(env: Env, fields: SetField[], items: { id: string; text: string }[]): Promise<Map<string, Record<string, unknown>>> {
   const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, httpOptions: env.GEMINI_BASE_URL ? { baseUrl: env.GEMINI_BASE_URL } : undefined });
   const props = Object.fromEntries(fields.map((f) => [f.key, fieldSchema(f)]));
+  const ids = items.map((_, i) => `item_${i + 1}`);
   const schema = {
     type: "object",
     properties: {
       items: {
         type: "array",
-        items: { type: "object", properties: { n: { type: "integer", description: "item 番号" }, fields: { type: "object", properties: props } }, required: ["n", "fields"] },
+        items: { type: "object", properties: { item_id: { type: "string", enum: ids }, fields: { type: "object", properties: props } }, required: ["item_id", "fields"] },
       },
     },
     required: ["items"],
   };
   const fieldList = fields.map((f) => `- ${f.key}（${f.label} / ${f.type}）${f.description ? `: ${f.description}` : ""}`).join("\n");
-  const body = items.map((it, i) => `## item ${i + 1}\n<untrusted_item>\n${it.text}\n</untrusted_item>`).join("\n\n");
+  const body = items.map((it, i) => `## ${ids[i]}\n<untrusted_item id="${ids[i]}">\n${it.text}\n</untrusted_item>`).join("\n\n");
   const r = await client.models.generateContent({
     model: env.GEMINI_MODEL || "gemini-3.5-flash-lite",
-    contents: [{ role: "user", parts: [{ text: `取り出すフィールド:\n${fieldList}\n\n各 item について、番号 n と fields を返してください。\n\n${body}` }] }],
+    contents: [{ role: "user", parts: [{ text: `取り出すフィールド:\n${fieldList}\n\n${items.length} 件の item（${ids.join(", ")}）すべてについて、item_id と fields を返してください。値が見つからない item も fields を空にして必ず含めてください。\n\n${body}` }] }],
     config: { systemInstruction: SYSTEM, responseMimeType: "application/json", responseJsonSchema: schema, maxOutputTokens: 8000, temperature: 0 },
   });
   const text = r.text ?? "";
-  const parsed = JSON.parse(text) as { items?: { n: number; fields: Record<string, unknown> }[] };
+  let parsed: { items?: { item_id: string; fields: Record<string, unknown> }[] };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`invalid_json (finish=${r.candidates?.[0]?.finishReason ?? "?"}): ${text.slice(0, 200)}`);
+  }
   const out = new Map<string, Record<string, unknown>>();
   for (const x of parsed.items ?? []) {
-    const it = items[Number(x.n) - 1];
-    if (it && x.fields && typeof x.fields === "object") out.set(it.id, x.fields);
+    const idx = ids.indexOf(String(x.item_id));
+    // 同じ ID が複数返ったら曖昧なので採らない
+    if (idx < 0 || out.has(items[idx].id)) {
+      if (idx >= 0) out.delete(items[idx].id);
+      continue;
+    }
+    if (x.fields && typeof x.fields === "object") out.set(items[idx].id, x.fields);
   }
   return out;
 }
@@ -213,16 +228,28 @@ export async function processFieldExtractions(env: Env, opts: { limit?: number; 
     for (let i = 0; i < rows.length; i += BATCH) {
       const chunk = rows.slice(i, i + BATCH);
       const now = nowIso();
-      let result: Map<string, Record<string, unknown>> | null = null;
+      let result = new Map<string, Record<string, unknown>>();
       let err: string | null = null;
       try {
         result = await extractBatch(env, fields, chunk.map((r) => ({ id: r.id, text: itemText(r) })));
       } catch (e) {
         err = (e as Error).message.slice(0, 500);
       }
+      // まとめての抽出で結果が返らなかった item は1件ずつ取り直す
+      if (chunk.length > 1)
+        for (const row of chunk) {
+          if (result.has(row.id)) continue;
+          try {
+            const one = await extractBatch(env, fields, [{ id: row.id, text: itemText(row) }]);
+            const v = one.get(row.id);
+            if (v) result.set(row.id, v);
+          } catch (e) {
+            err = (e as Error).message.slice(0, 500);
+          }
+        }
       const stmts: D1PreparedStatement[] = [];
       for (const row of chunk) {
-        const vals = result?.get(row.id);
+        const vals = result.get(row.id);
         if (!vals) {
           errors++;
           stmts.push(
