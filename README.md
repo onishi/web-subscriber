@@ -30,7 +30,7 @@ pnpm --filter @ws/web build
 ```
 
 ```bash
-cd apps/api && printf 'DEV_AUTH_BYPASS=1\n' > .dev.vars && npx wrangler d1 migrations apply ws-db --local
+cd apps/api && printf 'DEV_AUTH_BYPASS=1\n' > .dev.vars && npx wrangler d1 migrations apply web-subscriber-db --local
 ```
 
 ```bash
@@ -74,17 +74,17 @@ AI ツールループの配線（ツール呼び出し → VPS プローブ → 
 ### Cloudflare
 
 ```bash
-cd apps/api && npx wrangler d1 create ws-db
+cd apps/api && npx wrangler d1 create web-subscriber-db
 ```
 
 出力された `database_id` を `apps/api/wrangler.jsonc` に設定します。
 
 ```bash
-cd apps/api && npx wrangler r2 bucket create ws-blobs && npx wrangler d1 migrations apply ws-db --remote
+cd apps/api && npx wrangler r2 bucket create web-subscriber-blobs && npx wrangler d1 migrations apply web-subscriber-db --remote
 ```
 
 ```bash
-./deploy/r2-lifecycle.sh ws-blobs
+./deploy/r2-lifecycle.sh web-subscriber-blobs
 ```
 
 ```bash

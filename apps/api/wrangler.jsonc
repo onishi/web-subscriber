@@ -10,8 +10,8 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/worker/*"]
   },
-  "d1_databases": [{ "binding": "DB", "database_name": "ws-db", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "migrations" }],
-  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "ws-blobs" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "web-subscriber-db", "database_id": "9df90e71-a98f-43a3-84f1-1a108318e3f3", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "web-subscriber-blobs" }],
   "workflows": [{ "name": "ws-setup", "binding": "SETUP_WORKFLOW", "class_name": "SetupWorkflow" }],
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {

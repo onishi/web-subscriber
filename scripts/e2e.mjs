@@ -179,7 +179,7 @@ async function main() {
   // 再送：同じ submission_key のページ結果を再送しても item・履歴が重複しない
   if (process.env.WS_WORKER_TOKEN) {
     const { execFileSync } = await import("node:child_process");
-    const out = execFileSync("npx", ["wrangler", "d1", "execute", "ws-db", "--local", "--json", "--command", `SELECT j.id, j.lease_token, j.attempt FROM jobs j WHERE j.run_id = '${p1.id}'`], {
+    const out = execFileSync("npx", ["wrangler", "d1", "execute", "web-subscriber-db", "--local", "--json", "--command", `SELECT j.id, j.lease_token, j.attempt FROM jobs j WHERE j.run_id = '${p1.id}'`], {
       cwd: new URL("../apps/api/", import.meta.url).pathname,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
