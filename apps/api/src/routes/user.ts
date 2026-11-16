@@ -285,7 +285,7 @@ userApi.get("/artifacts/*", async (c) => {
 // ---- item ----
 userApi.get("/items", async (c) => {
   const uid = c.get("userId");
-  const view = c.req.query("view") ?? "new"; // new | all | baseline | updated
+  const view = c.req.query("view") ?? "new"; // new（基準データも含め検出・更新の新しい順）| all | baseline | updated
   const sub = c.req.query("subscription_id");
   const unread = c.req.query("unread") === "1";
   const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
@@ -296,7 +296,6 @@ userApi.get("/items", async (c) => {
     where.push("i.subscription_id = ?");
     args.push(sub);
   }
-  if (view === "new") where.push("(i.is_baseline = 0 OR i.last_changed_at IS NOT NULL)");
   if (view === "baseline") where.push("i.is_baseline = 1");
   if (view === "updated") where.push("i.last_changed_at IS NOT NULL");
   if (unread) where.push("rs.read_at IS NULL AND i.is_baseline = 0");
@@ -318,7 +317,8 @@ userApi.get("/items", async (c) => {
     ...r,
     published_at: json(r.published_at as string, null),
     updated_at: json(r.updated_at as string, null),
-    is_read: !!r.read_at,
+    // 基準データ（初回取得分）は未読にしない
+    is_read: !!r.read_at || !!r.is_baseline,
     // 既読後に内容が更新された／更新済みitem：「更新」印
     updated_mark: !!r.last_changed_at && (!r.read_at || String(r.last_changed_at) > String(r.read_at)),
   }));

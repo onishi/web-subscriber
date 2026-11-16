@@ -44,9 +44,9 @@ export function ItemList({ subscriptionId, view: initialView = "new", showViewTa
         {showViewTabs && (
           <div className="tabs" style={{ marginBottom: 0 }}>
             {[
-              ["new", "新着・更新"],
+              ["new", "すべて"],
+              ["updated", "更新"],
               ["baseline", "基準データ"],
-              ["all", "すべて"],
             ].map(([v, l]) => (
               <button key={v} className={view === v ? "on" : ""} onClick={() => (setView(v), setOffset(0))}>
                 {l}
@@ -68,11 +68,7 @@ export function ItemList({ subscriptionId, view: initialView = "new", showViewTa
         </button>
       </div>
       {error && <p className="error">{error}</p>}
-      {data && data.items.length === 0 && (
-        <p className="muted">
-          item はありません。{view === "new" && "初回クロールで取得した item は「基準データ」として扱い、新着には出しません。"}
-        </p>
-      )}
+      {data && data.items.length === 0 && <p className="muted">item はありません。</p>}
       {data?.items.map((it) => (
         <div key={it.id}>
           <div

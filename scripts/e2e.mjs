@@ -75,7 +75,9 @@ async function main() {
   ok(r1.trigger === "activation" && r1.config_version === 1, "実行種別=設定適用、設定バージョン v1 と対応");
   let items = (await api(`/api/v1/items?view=baseline&subscription_id=${created.id}`)).items;
   ok(items.length === 5, `基準データ 5 件（${items.length}）`);
-  ok((await api(`/api/v1/items?view=new&subscription_id=${created.id}`)).items.length === 0, "基準データは新着に出ない");
+  const feed = (await api(`/api/v1/items?view=new&subscription_id=${created.id}`)).items;
+  ok(feed.length === items.length && feed.every((i) => i.is_baseline && i.is_read), "基準データは一覧に既読として出る");
+  ok((await api(`/api/v1/items?view=new&unread=1&subscription_id=${created.id}`)).items.length === 0, "基準データは未読に出ない");
 
   // ---- 2) HTML + append ページング（手動設定） ----
   console.log("\n# HTML(browser, append): 手動設定 → 有効化 → 取得");
