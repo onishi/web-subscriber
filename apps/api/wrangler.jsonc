@@ -16,7 +16,7 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "DEFAULT_TIMEZONE": "Asia/Tokyo",
-    "GEMINI_MODEL": "gemini-3.6-flash",
+    "GEMINI_MODEL": "gemini-2.5-flash",
     "REPAIR_AFTER_FAILURES": "2",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",

@@ -16,7 +16,7 @@
 | 初回巡回範囲 | 初回も通常と同じ最大20ページ |
 | robots.txt | 従う（`Web-Subscriber` トークン優先、なければ `*`。最長一致、5xx は全拒否） |
 | User-Agent | `Web-Subscriber/0.0.1 (+連絡先URL)`。browser 方式は Chromium の UA の後ろに付加 |
-| 利用するAI | Gemini API（`@google/genai`、既定モデル `gemini-3.6-flash`。`GEMINI_MODEL` で変更可） |
+| 利用するAI | Gemini API（`@google/genai`、既定モデル `gemini-2.5-flash`（コストと軽さを優先）。`GEMINI_MODEL` で変更可） |
 | 修正提案 | 自動で作成（抽出異常が2回連続、同一購読先は20時間に1回まで）。稼働中の設定は変えず draft として提示 |
 | 更新された item | 未読には戻さず「更新」印（既読時刻より後に内容が変わったもの）を付ける |
 
@@ -670,7 +670,7 @@ Cloudflare Workflows のインスタンス1つ = SetupSession 1つ。各ステ�
 
 ### 7.4 モデルと呼び出し【提案】
 
-- モデル：Gemini API の `gemini-3.6-flash`（Stable、`@google/genai`、`GEMINI_MODEL` で変更可）。関数呼び出しでツールを使い、モデル応答の parts（thought signature を含む）はそのまま履歴に保持して返す。
+- モデル：Gemini API の `gemini-2.5-flash`（コスト優先、`@google/genai`、`GEMINI_MODEL` で変更可）。関数呼び出しでツールを使い、モデル応答の parts（thought signature を含む）はそのまま履歴に保持して返す。
 - 安全フィルタでブロックされた場合（`promptFeedback.blockReason` や `finishReason: SAFETY` 等）は AI 提案を打ち切り、自動判定（heuristic）に切り替える。
 - システムプロンプト・ツール定義・DSL仕様は固定し、会話の先頭に置く（暗黙キャッシュが効きやすい構成）。
 - APIキーは Workers Secret（`GEMINI_API_KEY`）。1セッションのAIターン数は16回で打ち切る（トークン使用量の記録・金額上限は未実装）。
@@ -774,7 +774,7 @@ Cloudflare Workflows のインスタンス1つ = SetupSession 1つ。各ステ�
 | 1 | Cloudflare構成 | Workers(Hono)+Static Assets+D1+R2+Workflows+Cron+Access | 【提案】 |
 | 2 | DB/ファイル | D1 / R2 | 【提案】 |
 | 3 | 技術選定 | React+Vite / Hono / Node+Playwright（pnpm monorepo, TypeScript統一） | 【提案】 |
-| 4 | AIモデル | Gemini API `gemini-3.6-flash`、関数呼び出し（プローブ経由） | 【確定】Gemini に変更 |
+| 4 | AIモデル | Gemini API `gemini-2.5-flash`、関数呼び出し（プローブ経由） | 【確定】Gemini に変更 |
 | 5 | 認証 | Cloudflare Access（本人メールのみ許可）。クローラはBearerトークン | 【提案】 |
 | 6 | タイムゾーン・実行時刻 | Asia/Tokyo、購読IDのハッシュで1日内に分散 | 【確定】時間帯は絞らない |
 | 7 | 上限・リトライ | 6.5 の既定値 | 【提案】 |
