@@ -68,7 +68,11 @@ export function ItemList({ subscriptionId, view: initialView = "new", showViewTa
         </button>
       </div>
       {error && <p className="error">{error}</p>}
-      {data && data.items.length === 0 && <p className="muted">item はありません。</p>}
+      {data && data.items.length === 0 && (
+        <p className="muted">
+          item はありません。{view === "new" && "初回クロールで取得した item は「基準データ」として扱い、新着には出しません。"}
+        </p>
+      )}
       {data?.items.map((it) => (
         <div key={it.id}>
           <div

@@ -157,7 +157,7 @@ export function SubscriptionPage() {
           </button>
         ))}
       </div>
-      {tab === "items" && <ItemList subscriptionId={s.id} showViewTabs view="new" />}
+      {tab === "items" && <ItemList subscriptionId={s.id} showViewTabs view="all" />}
       {tab === "runs" && <RunsTable subId={s.id} />}
       {tab === "config" && (
         <div className="panel table-wrap">
