@@ -122,6 +122,19 @@ describe("feed", () => {
     expect(r.items).toHaveLength(5);
     expect(r.pages[0].http_status).toBe(200);
   });
+
+  it("フィードにロゴがなければチャンネルのリンク先の og:image を使う", async () => {
+    const c = parseConfig({ schema_version: 1, source: { url: `${base}/rss.xml`, kind: "feed" }, fetch: { method: "http" }, identity: { method: "source_id" }, politeness: { min_interval_ms: 0 } });
+    if (!c.ok) throw new Error(c.errors.join());
+    let logo: unknown = "unset";
+    const sink = { page: async (p: { channel: { data: { logo?: unknown } } | null }) => void (logo = p.channel?.data.logo), artifact: async () => null };
+    await crawl(c.config, sink);
+    expect(logo).toBeUndefined();
+    await setState({ ogImage: true });
+    await crawl(c.config, sink);
+    expect(logo).toEqual({ url: `${base}/img/news-1.jpg?a=1&b=2` });
+    await setState({});
+  });
 });
 
 describe("robots", () => {

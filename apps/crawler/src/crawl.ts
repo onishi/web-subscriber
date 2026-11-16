@@ -19,7 +19,7 @@ import type { ListSnapshot, PageExtraction } from "@ws/shared/dom";
 import { openPage, ws, type OpenedPage } from "./browser.js";
 import { checkRobots, httpGet, FetchError, BlockedHostError } from "./net.js";
 import { parseFeed, looksLikeFeed } from "./feed.js";
-import type { ImageEnricher } from "./images.js";
+import { fetchOgImage, type ImageEnricher } from "./images.js";
 
 export type PageInfo = PageSubmission["page"];
 
@@ -113,6 +113,14 @@ async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
     const msg = (e as Error).message + (looksLikeFeed(res.headers["content-type"] ?? null, res.body) ? "" : " (not a feed)");
     await sink.page({ page: { ...pageBase, extract_status: "failed", error: msg }, channel: null, items: [] });
     return { ...base, pages_fetched: 1, traversal: "incomplete", end_reason: "error", extract_status: "failed", error_stage: "extract", error_detail: msg };
+  }
+  // フィードにロゴの指定がなければ、チャンネルのリンク先ページの og:image を使う
+  if (!parsed.channel.logo) {
+    const home = parsed.channel.links.find((l) => l.rel === "alternate")?.href;
+    if (home && /^https?:\/\//.test(home)) {
+      const og = await fetchOgImage(home, { minIntervalMs: cfg.politeness.min_interval_ms, respectRobots: cfg.politeness.respect_robots_txt });
+      if (og) parsed.channel.logo = { url: og };
+    }
   }
   const seen = new Set<string>();
   const items: SubmittedItem[] = [];

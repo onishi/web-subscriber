@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { JSDOM } from "jsdom";
 import { parseDate, sortKey } from "../src/date.js";
 import { parseConfig } from "../src/config.js";
-import { identityKey, itemContentHash, canonicalJson } from "../src/hash.js";
+import { identityKey, itemContentHash, canonicalJson, channelContentHash } from "../src/hash.js";
 import { decideRunOutcome } from "../src/protocol.js";
-import { emptyItem, itemImageFromData } from "../src/model.js";
+import { emptyItem, emptyChannel, itemImageFromData } from "../src/model.js";
 import { extractPage, evalRule } from "../src/dom/extract.js";
 import { applyTransforms } from "../src/transforms.js";
 
@@ -181,5 +181,14 @@ describe("itemImageFromData", () => {
     const it = emptyItem({ format: "html", extracted_fields: { image: "https://ex.com/i.png" } });
     expect(itemImageFromData(it)).toBe("https://ex.com/i.png");
     expect(itemImageFromData(base())).toBeUndefined();
+  });
+});
+
+describe("channelContentHash", () => {
+  it("ignores logo/icon", async () => {
+    const a = emptyChannel({ format: "atom" });
+    a.title = { type: "text", value: "t" };
+    const b = { ...a, logo: { url: "https://ex.com/l.png" }, icon: { url: "https://ex.com/i.png" } };
+    expect(await channelContentHash(a)).toBe(await channelContentHash(b));
   });
 });

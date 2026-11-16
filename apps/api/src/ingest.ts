@@ -60,7 +60,9 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
   // ---- channel ----
   let channelChanged = false;
   if (body.channel) {
-    const cur = await env.DB.prepare("SELECT content_hash FROM channels WHERE subscription_id = ?").bind(subId).first<{ content_hash: string }>();
+    const cur = await env.DB.prepare("SELECT content_hash, json_extract(data_json, '$.logo') AS logo FROM channels WHERE subscription_id = ?").bind(subId).first<{ content_hash: string; logo: string | null }>();
+    // 画像は変更検知の対象外：今回取れなかったときは保存済みのものを残す
+    if (cur?.logo && !body.channel.data.logo) body.channel.data.logo = JSON.parse(cur.logo);
     if (!cur) {
       stmts.push(
         env.DB.prepare("INSERT INTO channels (subscription_id, data_json, content_hash, first_seen_run_id, last_changed_run_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)").bind(
@@ -73,6 +75,9 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
         ),
         env.DB.prepare("INSERT INTO channel_revisions (id, subscription_id, run_id, data_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(newId(), subId, runId, JSON.stringify(body.channel.data), body.channel.content_hash, now),
       );
+    } else if (cur.content_hash === body.channel.content_hash) {
+      const logo = body.channel.data.logo ? JSON.stringify(body.channel.data.logo) : null;
+      if (logo && logo !== cur.logo) stmts.push(env.DB.prepare("UPDATE channels SET data_json = json_set(data_json, '$.logo', json(?)) WHERE subscription_id = ?").bind(logo, subId));
     } else if (cur.content_hash !== body.channel.content_hash) {
       channelChanged = !run.baseline_run;
       stmts.push(

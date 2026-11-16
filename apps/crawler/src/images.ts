@@ -35,6 +35,20 @@ function decodeEntities(s: string): string {
   return s.replace(/&(amp|lt|gt|quot|#39|#x27);/g, (_, e: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", "#x27": "'" })[e] ?? _);
 }
 
+/** ページの og:image。見つからない・取得できなければ null（一時的な失敗は undefined） */
+export async function fetchOgImage(link: string, opts: { minIntervalMs: number; timeoutMs?: number; respectRobots: boolean }): Promise<string | null | undefined> {
+  try {
+    if (opts.respectRobots && !(await checkRobots(link)).allowed) return null;
+    const res = await httpGet(link, { timeoutMs: opts.timeoutMs ?? 15000, minIntervalMs: opts.minIntervalMs });
+    if (res.status >= 500 || res.status === 429 || res.status === 408) return undefined;
+    if (res.status < 200 || res.status >= 300) return null;
+    if (!/html/i.test(res.headers["content-type"] ?? "text/html")) return null;
+    return parseOgImage(res.body, res.url);
+  } catch (e) {
+    return e instanceof FetchError && e.retryable ? undefined : null;
+  }
+}
+
 export class ImageEnricher {
   tried = 0;
   found = 0;
@@ -65,25 +79,11 @@ export class ImageEnricher {
       const link = primaryLink(it.data);
       if (!link || !/^https?:\/\//.test(link)) continue;
       this.skip.add(it.identity_key);
-      const r = await this.lookup(link);
+      const r = await fetchOgImage(link, this.opts);
       if (r === undefined) continue; // 一時的な失敗：確認済みにせず次回に回す
       this.tried++;
       if (r) this.found++;
       it.image_lookup = { url: r };
-    }
-  }
-
-  /** 見つかれば URL、ない・取得不可なら null、一時的な失敗なら undefined */
-  private async lookup(link: string): Promise<string | null | undefined> {
-    try {
-      if (this.opts.respectRobots && !(await checkRobots(link)).allowed) return null;
-      const res = await httpGet(link, { timeoutMs: this.opts.timeoutMs ?? 15000, minIntervalMs: this.opts.minIntervalMs });
-      if (res.status >= 500 || res.status === 429 || res.status === 408) return undefined;
-      if (res.status < 200 || res.status >= 300) return null;
-      if (!/html/i.test(res.headers["content-type"] ?? "text/html")) return null;
-      return parseOgImage(res.body, res.url);
-    } catch (e) {
-      return e instanceof FetchError && e.retryable ? undefined : null;
     }
   }
 }

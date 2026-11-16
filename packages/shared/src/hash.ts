@@ -91,8 +91,9 @@ export async function itemContentHash(item: ItemData, fields: readonly string[])
   return sha256Hex(canonicalJson(obj));
 }
 
+/** 画像（icon/logo）は変更検知の対象外 */
 export async function channelContentHash(ch: ChannelData): Promise<string> {
-  const { native, ...rest } = ch;
+  const { native, icon: _icon, logo: _logo, ...rest } = ch;
   const nativeForHash = native.format === "html" ? { ...native, document_url: undefined } : native;
   return sha256Hex(canonicalJson({ ...rest, native: nativeForHash }));
 }

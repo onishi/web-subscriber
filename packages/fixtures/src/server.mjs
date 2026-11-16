@@ -49,7 +49,7 @@ const routes = {
     body: `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:ex="http://example.com/ns/ext">
 <channel>
-  <title>Fixture RSS</title><link>http://fixture.local/</link><description>テスト用 &lt;b&gt;RSS&lt;/b&gt;</description>
+  <title>Fixture RSS</title><link>/news/1</link><description>テスト用 &lt;b&gt;RSS&lt;/b&gt;</description>
   <language>ja</language><copyright>(c) Fixture</copyright>
   <managingEditor>editor@example.com (Editor Name)</managingEditor><webMaster>web@example.com</webMaster>
   <ttl>60</ttl><docs>https://www.rssboard.org/rss-specification</docs><rating>(PICS-1.1)</rating>
