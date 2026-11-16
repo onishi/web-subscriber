@@ -4,7 +4,7 @@ import { parseDate, sortKey } from "../src/date.js";
 import { parseConfig } from "../src/config.js";
 import { identityKey, itemContentHash, canonicalJson } from "../src/hash.js";
 import { decideRunOutcome } from "../src/protocol.js";
-import { emptyItem } from "../src/model.js";
+import { emptyItem, itemImageFromData } from "../src/model.js";
 import { extractPage, evalRule } from "../src/dom/extract.js";
 import { applyTransforms } from "../src/transforms.js";
 
@@ -154,5 +154,27 @@ describe("decideRunOutcome", () => {
     expect(decideRunOutcome({ ...base, traversal: "incomplete", newItems: 1 })).toMatchObject({ changeStatus: "changed", runStatus: "partial" });
     expect(decideRunOutcome({ ...base, traversal: "incomplete" })).toMatchObject({ changeStatus: "unknown" });
     expect(decideRunOutcome(base)).toMatchObject({ changeStatus: "unchanged", runStatus: "completed" });
+  });
+});
+
+describe("itemImageFromData", () => {
+  const base = () => emptyItem({ format: "rss2" });
+  it("uses image enclosure", () => {
+    const it = base();
+    it.links.push({ href: "https://ex.com/a.mp3", rel: "enclosure", media_type: "audio/mpeg" }, { href: "https://ex.com/a.jpg", rel: "enclosure", media_type: "image/jpeg" });
+    expect(itemImageFromData(it)).toBe("https://ex.com/a.jpg");
+  });
+  it("uses media:thumbnail / media:content", () => {
+    const it = base();
+    const M = "http://search.yahoo.com/mrss/";
+    it.extensions.push({ ns: M, local: "content", attrs: [{ ns: null, local: "url", value: "https://ex.com/v.mp4" }, { ns: null, local: "medium", value: "video" }], xml: "" });
+    expect(itemImageFromData(it)).toBeUndefined();
+    it.extensions.push({ ns: M, local: "group", attrs: [], xml: "", children: [{ ns: M, local: "thumbnail", attrs: [{ ns: null, local: "url", value: "https://ex.com/t.jpg" }], xml: "" }] });
+    expect(itemImageFromData(it)).toBe("https://ex.com/t.jpg");
+  });
+  it("uses extracted image field for html", () => {
+    const it = emptyItem({ format: "html", extracted_fields: { image: "https://ex.com/i.png" } });
+    expect(itemImageFromData(it)).toBe("https://ex.com/i.png");
+    expect(itemImageFromData(base())).toBeUndefined();
   });
 });

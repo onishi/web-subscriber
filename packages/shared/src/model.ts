@@ -181,6 +181,39 @@ export function primaryLink(item: Pick<ItemData, "links">): string | undefined {
   return item.links.find((l) => l.rel === "alternate")?.href;
 }
 
+const MEDIA_RSS_NS = "http://search.yahoo.com/mrss/";
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif)(\?|#|$)/i;
+
+/** 配信元データ自体が指定している item 画像（enclosure / Media RSS / HTML抽出の image・thumbnail フィールド） */
+export function itemImageFromData(item: ItemData): string | undefined {
+  const enc = item.links.find((l) => l.rel === "enclosure" && (l.media_type?.startsWith("image/") || (!l.media_type && IMAGE_EXT.test(l.href))));
+  if (enc) return enc.href;
+  const walk = (exts: Extension[]): string | undefined => {
+    for (const e of exts) {
+      if (e.ns === MEDIA_RSS_NS) {
+        const attr = (n: string) => e.attrs.find((a) => a.local === n && !a.ns)?.value;
+        const url = attr("url");
+        if (url && (e.local === "thumbnail" || (e.local === "content" && (attr("medium") === "image" || attr("type")?.startsWith("image/") || IMAGE_EXT.test(url))))) return url;
+        if (e.children?.length) {
+          const u = walk(e.children);
+          if (u) return u;
+        }
+      }
+    }
+    return undefined;
+  };
+  const media = walk(item.extensions);
+  if (media) return media;
+  if (item.native.format === "html") {
+    for (const k of ["image", "thumbnail"]) {
+      const v = item.native.extracted_fields[k];
+      const s = Array.isArray(v) ? v[0] : v;
+      if (typeof s === "string" && /^https?:\/\//.test(s)) return s;
+    }
+  }
+  return undefined;
+}
+
 // ---- 検証（元形式とアプリ利用可否を分離） ----
 
 export interface ValidationIssue {

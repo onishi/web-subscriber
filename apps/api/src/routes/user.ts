@@ -93,13 +93,26 @@ userApi.get("/subscriptions/:id", async (c) => {
 userApi.patch("/subscriptions/:id", async (c) => {
   const s = await getSub(c.env, c.req.param("id"));
   if (!s) return c.json({ error: "not_found" }, 404);
-  const b = await c.req.json<{ status?: "active" | "paused" | "archived"; display_title?: string | null; schedule_minute_of_day?: number; schedule_interval_minutes?: number }>();
+  const b = await c.req.json<{
+    status?: "active" | "paused" | "archived";
+    display_title?: string | null;
+    schedule_minute_of_day?: number;
+    schedule_interval_minutes?: number;
+    /** null で未判定に戻す（次回の実行で再試行） */
+    item_image_mode?: "og_image" | "off" | null;
+  }>();
   const now = nowIso();
   if (b.status) {
     if (b.status === "active" && !s.active_config_version_id) return c.json({ error: "no_active_config" }, 400);
     const next = b.status === "active" ? nextRunAt(b.schedule_minute_of_day ?? s.schedule_minute_of_day, b.schedule_interval_minutes ?? s.schedule_interval_minutes, s.timezone) : null;
     await c.env.DB.prepare("UPDATE subscriptions SET status = ?, next_run_at = ?, updated_at = ? WHERE id = ?").bind(b.status, next, now, s.id).run();
     if (b.status !== "active") await c.env.DB.prepare("UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE subscription_id = ? AND kind = 'crawl' AND status = 'queued'").bind(now, s.id).run();
+  }
+  if (b.item_image_mode !== undefined) {
+    if (b.item_image_mode !== null && b.item_image_mode !== "og_image" && b.item_image_mode !== "off") return c.json({ error: "bad_item_image_mode" }, 400);
+    await c.env.DB.prepare("UPDATE subscriptions SET item_image_mode = ?, updated_at = ? WHERE id = ?").bind(b.item_image_mode, now, s.id).run();
+    // 再試行時は見つからなかった item も確認し直す
+    if (b.item_image_mode === null) await c.env.DB.prepare("UPDATE items SET image_checked_at = NULL WHERE subscription_id = ? AND image_url IS NULL").bind(s.id).run();
   }
   if (b.display_title !== undefined) await c.env.DB.prepare("UPDATE subscriptions SET display_title = ?, updated_at = ? WHERE id = ?").bind(b.display_title, now, s.id).run();
   if (b.schedule_minute_of_day !== undefined || b.schedule_interval_minutes !== undefined) {
@@ -302,7 +315,7 @@ userApi.get("/items", async (c) => {
   const order = view === "updated" ? "i.last_changed_at DESC" : view === "new" ? "COALESCE(i.last_changed_at, i.first_seen_at) DESC, i.id DESC" : "i.first_seen_at DESC, COALESCE(i.published_sort, '') DESC, i.id DESC";
   args.push(limit + 1, offset);
   const rs = await c.env.DB.prepare(
-    `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.published_sort, i.is_baseline, i.first_seen_at, i.last_seen_at, i.last_changed_at, i.revision_count,
+    `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.published_sort, i.is_baseline, i.image_url, i.first_seen_at, i.last_seen_at, i.last_changed_at, i.revision_count,
        json_extract(i.data_json, '$.summary.value') AS summary, json_extract(i.data_json, '$.summary.type') AS summary_type,
        json_extract(i.data_json, '$.published_at') AS published_at, json_extract(i.data_json, '$.updated_at') AS updated_at,
        COALESCE(s.display_title, json_extract(ch.data_json, '$.title.value'), s.input_url) AS subscription_title,

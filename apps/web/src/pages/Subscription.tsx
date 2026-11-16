@@ -126,6 +126,21 @@ export function SubscriptionPage() {
           <div>{fmtTime(s.last_change_at)}</div>
           <div>次回予定</div>
           <div>{s.status === "active" ? `${fmtTime(s.next_run_at)}（${fmtRelative(s.next_run_at)}）` : "—"}</div>
+          <div>item 画像</div>
+          <div className="row">
+            <select
+              value={s.item_image_mode ?? ""}
+              onChange={async (e) => {
+                await api(`/subscriptions/${s.id}`, { method: "PATCH", json: { item_image_mode: e.target.value || null } });
+                void reload();
+              }}
+            >
+              <option value="">自動判定（次回の取得で試行）</option>
+              <option value="og_image">リンク先の og:image を取得する</option>
+              <option value="off">取得しない</option>
+            </select>
+            <span className="muted">配信元に画像の指定がない item だけ、リンク先を確認します</span>
+          </div>
           <div>基準データ</div>
           <div>{s.baseline_status === "complete" ? "作成済み" : s.baseline_status === "partial" ? "未完成（初回巡回が途中で終了）" : "未作成"}</div>
         </div>

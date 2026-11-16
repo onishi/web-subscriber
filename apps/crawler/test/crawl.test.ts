@@ -8,6 +8,7 @@ import { settings } from "../src/settings.js";
 import { crawl, type PageInfo } from "../src/crawl.js";
 import { parseFeed } from "../src/feed.js";
 import { closeBrowser } from "../src/browser.js";
+import { ImageEnricher, parseOgImage, TRIAL_LIMIT } from "../src/images.js";
 import { parseRobots, robotsAllows, httpGet } from "../src/net.js";
 
 let server: Server;
@@ -25,7 +26,7 @@ afterAll(async () => {
 });
 
 async function setState(s: Record<string, unknown>) {
-  await fetch(`${base}/__state`, { method: "POST", body: JSON.stringify({ itemsVersion: 1, extraItem: false, empty: false, broken: false, failPage: null, robotsDisallow: false, ...s }) });
+  await fetch(`${base}/__state`, { method: "POST", body: JSON.stringify({ itemsVersion: 1, extraItem: false, empty: false, broken: false, failPage: null, robotsDisallow: false, ogImage: false, ...s }) });
 }
 
 const itemFields = {
@@ -49,7 +50,7 @@ function cfg(over: Record<string, unknown>): SubscriptionConfig {
   return r.config;
 }
 
-async function run(c: SubscriptionConfig) {
+async function run(c: SubscriptionConfig, images?: ImageEnricher) {
   const pages: PageInfo[] = [];
   const items: SubmittedItem[] = [];
   const outcome = await crawl(c, {
@@ -58,7 +59,7 @@ async function run(c: SubscriptionConfig) {
       items.push(...p.items);
     },
     artifact: async () => null,
-  });
+  }, { images });
   return { outcome, pages, items };
 }
 
@@ -245,6 +246,47 @@ describe("html crawl", () => {
     const u = `${base.replace("127.0.0.1", "localhost")}/static/list`;
     const r = await run(cfg({ source: { url: u }, fetch: { method: "http" } }));
     expect(r.outcome).toMatchObject({ end_reason: "robots_disallowed", error_stage: "robots" });
+    await setState({});
+  });
+});
+
+describe("item images (og:image)", () => {
+  it("parses og:image / twitter:image from head", () => {
+    expect(parseOgImage(`<html><head><meta property="og:image" content="/a.png"></head>`, "https://ex.com/p/1")).toBe("https://ex.com/a.png");
+    expect(parseOgImage(`<head><meta content='https://cdn.ex.com/x.jpg?a=1&amp;b=2' property='og:image'/></head>`, "https://ex.com/")).toBe("https://cdn.ex.com/x.jpg?a=1&b=2");
+    expect(parseOgImage(`<head><meta name="twitter:image" content="//cdn.ex.com/t.jpg"></head>`, "https://ex.com/")).toBe("https://cdn.ex.com/t.jpg");
+    expect(parseOgImage(`<head><title>x</title></head><body><meta property="og:image" content="/late.png"></body>`, "https://ex.com/")).toBeNull();
+    expect(parseOgImage(`<head><meta property="og:image" content="javascript:alert(1)"></head>`, "https://ex.com/")).toBeNull();
+  });
+
+  const listCfg = () => cfg({ source: { url: `${base}/static/list` }, fetch: { method: "http" } });
+
+  it("trial: finds og:image and keeps going for the rest", async () => {
+    await setState({ ogImage: true });
+    const images = new ImageEnricher({ mode: "trial", skip_keys: [] }, { minIntervalMs: 0, respectRobots: true });
+    const r = await run(listCfg(), images);
+    const looked = r.items.filter((i) => i.image_lookup);
+    expect(looked.length).toBe(r.items.length);
+    expect(looked[0].image_lookup!.url).toMatch(/\/img\/news-\d+\.jpg\?a=1&b=2$/);
+    expect(images.stats()).toMatchObject({ mode: "trial", found: r.items.length, tried: r.items.length });
+    await setState({});
+  });
+
+  it("trial: gives up after a few misses", async () => {
+    const images = new ImageEnricher({ mode: "trial", skip_keys: [] }, { minIntervalMs: 0, respectRobots: true });
+    const r = await run(listCfg(), images);
+    expect(images.stats()).toMatchObject({ tried: TRIAL_LIMIT, found: 0 });
+    expect(r.items.filter((i) => i.image_lookup).every((i) => i.image_lookup!.url === null)).toBe(true);
+  });
+
+  it("on: skips items already checked", async () => {
+    await setState({ ogImage: true });
+    const first = await run(listCfg());
+    const skip = first.items.slice(0, 2).map((i) => i.identity_key!);
+    const images = new ImageEnricher({ mode: "on", skip_keys: skip }, { minIntervalMs: 0, respectRobots: true });
+    const r = await run(listCfg(), images);
+    expect(r.items.filter((i) => skip.includes(i.identity_key!)).every((i) => !i.image_lookup)).toBe(true);
+    expect(images.stats().tried).toBe(r.items.length - 2);
     await setState({});
   });
 });

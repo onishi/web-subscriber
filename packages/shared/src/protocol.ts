@@ -25,9 +25,20 @@ export interface LeasedJob {
   subscription_id?: string;
   config_version_id?: string;
   config?: SubscriptionConfig;
+  /** crawl のとき：リンク先 og:image の取得（未指定なら取得しない） */
+  item_images?: ItemImagesInstruction;
   /** probe のとき */
   probe_id?: string;
   probe?: ProbeRequest;
+}
+
+/**
+ * trial: 未判定。最大数件で試し、見つかればそのまま取得を続ける（結果は API が購読に記憶する）
+ * on: 取得する。skip_keys（画像あり・確認済み）の item は取得しない
+ */
+export interface ItemImagesInstruction {
+  mode: "trial" | "on";
+  skip_keys: string[];
 }
 
 export type ProbeRequest =
@@ -45,6 +56,8 @@ export interface SubmittedItem {
   failures?: { field: string; status: string; reason?: string }[];
   position: number;
   data: ItemData;
+  /** リンク先の og:image を確認した結果（確認しなかった item には付けない） */
+  image_lookup?: { url: string | null };
 }
 
 export interface PageSubmission {
@@ -107,6 +120,8 @@ export interface CompleteSubmission {
   engine_version: string;
   /** 一時的失敗（再試行対象）か */
   retryable?: boolean;
+  /** リンク先 og:image の試行結果 */
+  item_images?: { mode: "trial" | "on"; tried: number; found: number };
 }
 
 export interface ProbeResultSubmission {

@@ -9,6 +9,7 @@ const state = {
   broken: false,
   failPage: null, // replace ページングでこのページ番号を 500 にする
   robotsDisallow: false,
+  ogImage: false, // true にすると /news/:id に og:image を付ける
 };
 
 function items() {
@@ -163,7 +164,12 @@ const routes = {
   "/robots.txt": () => ({ type: "text/plain", body: state.robotsDisallow ? "User-agent: Web-Subscriber\nDisallow: /static/\n" : "User-agent: *\nDisallow: /private/\n" }),
 };
 
-for (let i = 1; i <= 13; i++) routes[`/news/${i}`] = () => ({ type: "text/html; charset=utf-8", body: page(`News ${i}`, `<article>本文 ${i}</article>`) });
+for (let i = 1; i <= 13; i++)
+  routes[`/news/${i}`] = () => {
+    const html = page(`News ${i}`, `<article>本文 ${i}</article>`);
+    const og = `<meta content="/img/news-${i}.jpg?a=1&amp;b=2" property="og:image">`;
+    return { type: "text/html; charset=utf-8", body: state.ogImage ? html.replace("<head>", `<head>${og}`) : html };
+  };
 
 export function createFixtureServer() {
   return http.createServer((req, res) => {

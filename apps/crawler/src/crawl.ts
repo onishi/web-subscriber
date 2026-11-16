@@ -19,6 +19,7 @@ import type { ListSnapshot, PageExtraction } from "@ws/shared/dom";
 import { openPage, ws, type OpenedPage } from "./browser.js";
 import { checkRobots, httpGet, FetchError, BlockedHostError } from "./net.js";
 import { parseFeed, looksLikeFeed } from "./feed.js";
+import type { ImageEnricher } from "./images.js";
 
 export type PageInfo = PageSubmission["page"];
 
@@ -55,7 +56,13 @@ async function toSubmitted(cfg: SubscriptionConfig, data: ItemData, position: nu
   };
 }
 
-export async function crawl(cfg: SubscriptionConfig, sink: CrawlSink, opts: { saveSnapshots?: boolean } = {}): Promise<CrawlOutcome> {
+export interface CrawlOptions {
+  saveSnapshots?: boolean;
+  /** リンク先 og:image の取得 */
+  images?: ImageEnricher;
+}
+
+export async function crawl(cfg: SubscriptionConfig, sink: CrawlSink, opts: CrawlOptions = {}): Promise<CrawlOutcome> {
   const url = cfg.source.url;
   const base: Omit<CrawlOutcome, "end_reason" | "traversal"> = {
     extract_status: "skipped",
@@ -78,11 +85,11 @@ export async function crawl(cfg: SubscriptionConfig, sink: CrawlSink, opts: { sa
     }
   }
 
-  if (cfg.source.kind === "feed") return crawlFeed(cfg, sink, base);
+  if (cfg.source.kind === "feed") return crawlFeed(cfg, sink, base, opts);
   return crawlHtml(cfg, sink, base, opts);
 }
 
-async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<CrawlOutcome, "end_reason" | "traversal">): Promise<CrawlOutcome> {
+async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<CrawlOutcome, "end_reason" | "traversal">, opts: CrawlOptions): Promise<CrawlOutcome> {
   const url = cfg.source.url;
   const fetchedAt = now();
   let res;
@@ -115,6 +122,7 @@ async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
     if (s.identity_key) seen.add(s.identity_key);
     items.push(s);
   }
+  await opts.images?.enrich(items);
   await sink.page({
     page: { ...pageBase, extract_status: "success", item_count: parsed.items.length },
     channel: { data: parsed.channel, content_hash: await channelContentHash(parsed.channel) },
@@ -142,7 +150,7 @@ async function waitFor(page: Page, cfg: SubscriptionConfig, w: Wait | undefined,
   return { ok: false, detail: last, ms: Date.now() - t0 };
 }
 
-async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<CrawlOutcome, "end_reason" | "traversal">, opts: { saveSnapshots?: boolean }): Promise<CrawlOutcome> {
+async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<CrawlOutcome, "end_reason" | "traversal">, opts: CrawlOptions): Promise<CrawlOutcome> {
   const url = cfg.source.url;
   const started = Date.now();
   const limits = cfg.paging.limits;
@@ -242,6 +250,7 @@ async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
       const channel = seq === 0 && ex.channel ? { data: ex.channel, content_hash: await channelContentHash(ex.channel) } : null;
       extractedPages++;
       if (ex.status === "failed") anyExtractFailed = true;
+      if (ex.status !== "failed") await opts.images?.enrich(submitted);
       await sink.page({
         page: {
           seq,

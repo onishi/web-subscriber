@@ -1,5 +1,5 @@
 // ジョブ（キュー兼リース）・スケジューラ（docs/design.md §6）
-import type { LeasedJob, ProbeRequest, RunTrigger, SubscriptionConfig } from "@ws/shared";
+import type { ItemImagesInstruction, LeasedJob, ProbeRequest, RunTrigger, SubscriptionConfig } from "@ws/shared";
 import { type Env, newId, nowIso, addMinutes, randomToken, nextRunAt, json } from "./env.js";
 
 const LEASE_MINUTES = 5;
@@ -25,6 +25,7 @@ export interface SubRow {
   consecutive_failures: number;
   consecutive_extract_failures: number;
   current_setup_session_id: string | null;
+  item_image_mode: "og_image" | "off" | null;
   created_at: string;
   updated_at: string;
 }
@@ -101,6 +102,7 @@ export async function leaseJobs(env: Env, workerId: string, capacity: number, ki
         continue;
       }
       await env.DB.prepare("UPDATE crawl_runs SET run_status = 'running', started_at = COALESCE(started_at, ?), worker_id = ? WHERE id = ?").bind(now, workerId, row.run_id).run();
+      const itemImages = await itemImagesInstruction(env, row.subscription_id!, run.config_version_id);
       out.push({
         job_id: row.id,
         kind: "crawl",
@@ -111,6 +113,7 @@ export async function leaseJobs(env: Env, workerId: string, capacity: number, ki
         subscription_id: row.subscription_id!,
         config_version_id: run.config_version_id,
         config: JSON.parse(run.config_json) as SubscriptionConfig,
+        ...(itemImages ? { item_images: itemImages } : {}),
       });
     } else {
       const p = await env.DB.prepare("SELECT request_json FROM probes WHERE id = ?").bind(row.probe_id).first<{ request_json: string }>();
@@ -120,6 +123,17 @@ export async function leaseJobs(env: Env, workerId: string, capacity: number, ki
     }
   }
   return out;
+}
+
+/** リンク先 og:image の取得指示。画像あり・確認済みの item は除外する */
+async function itemImagesInstruction(env: Env, subId: string, configVersionId: string): Promise<ItemImagesInstruction | null> {
+  const sub = await env.DB.prepare("SELECT item_image_mode FROM subscriptions WHERE id = ?").bind(subId).first<{ item_image_mode: string | null }>();
+  if (!sub || sub.item_image_mode === "off") return null;
+  const cv = await env.DB.prepare("SELECT identity_scheme_hash FROM config_versions WHERE id = ?").bind(configVersionId).first<{ identity_scheme_hash: string }>();
+  const rs = await env.DB.prepare("SELECT identity_key FROM items WHERE subscription_id = ? AND identity_scheme = ? AND (image_url IS NOT NULL OR image_checked_at IS NOT NULL)")
+    .bind(subId, cv?.identity_scheme_hash ?? "")
+    .all<{ identity_key: string }>();
+  return { mode: sub.item_image_mode === "og_image" ? "on" : "trial", skip_keys: rs.results.map((r) => r.identity_key) };
 }
 
 export async function extendLease(env: Env, jobId: string, token: string): Promise<string | null> {

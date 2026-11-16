@@ -9,6 +9,7 @@ interface ItemRow {
   subscription_title: string;
   title_text: string | null;
   primary_link: string | null;
+  image_url: string | null;
   summary: string | null;
   summary_type: string | null;
   published_at: any;
@@ -72,12 +73,13 @@ export function ItemList({ subscriptionId, view: initialView = "new", showViewTa
       {data?.items.map((it) => (
         <div key={it.id}>
           <div
-            className={`item ${it.is_read ? "read" : ""}`}
+            className={`item ${it.is_read ? "read" : ""} ${it.image_url ? "has-thumb" : ""}`}
             onClick={() => {
               setOpen(open === it.id ? null : it.id);
               if (!it.is_read || it.updated_mark) void markRead(it, true);
             }}
           >
+            {it.image_url && <img className="thumb" src={it.image_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />}
             <div>
               <div className="row">
                 {!it.is_read && !it.is_baseline && <span className="badge accent">未読</span>}

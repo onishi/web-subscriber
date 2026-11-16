@@ -1,5 +1,5 @@
 // クロール結果の取り込みと新着・更新判定（docs/design.md §5, §6.3, §11）
-import { decideRunOutcome, sortKey, primaryLink, type PageSubmission, type CompleteSubmission, type ItemData } from "@ws/shared";
+import { decideRunOutcome, sortKey, primaryLink, itemImageFromData, type PageSubmission, type CompleteSubmission, type ItemData } from "@ws/shared";
 import { type Env, newId, nowIso, json } from "./env.js";
 import { scheduleRetry, retryCountOf, type SubRow } from "./jobs.js";
 
@@ -116,6 +116,11 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
     const dataJson = JSON.stringify(data);
     const link = primaryLink(data) ?? null;
     const pub = sortKey(data.published_at) ?? sortKey(data.updated_at);
+    // 画像：配信元データの指定を優先し、なければリンク先の og:image
+    const feedImage = itemImageFromData(data) ?? null;
+    const ogImage = it.image_lookup?.url ?? null;
+    const image = feedImage ? { url: feedImage, source: "feed" } : ogImage ? { url: ogImage, source: "og_image" } : null;
+    const checkedAt = it.image_lookup ? now : null;
     let ex = existing.get(key);
 
     // 識別方式変更後の再基準化：副キー（source_id → 閲覧URL）で旧itemへ付け替え
@@ -136,8 +141,8 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
       stmts.push(
         env.DB.prepare(
           `INSERT INTO items (id, subscription_id, identity_scheme, identity_key, source_id, data_json, content_hash, hash_scheme, title_text, primary_link, published_sort, is_baseline,
-            first_seen_run_id, first_seen_at, last_seen_run_id, last_seen_at, revision_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-        ).bind(id, subId, cv.identity_scheme_hash, key, data.source_id ?? null, dataJson, it.content_hash, cv.hash_scheme_hash, textOf(data), link, pub, run.baseline_run ? 1 : 0, runId, now, runId, now),
+            first_seen_run_id, first_seen_at, last_seen_run_id, last_seen_at, revision_count, image_url, image_source, image_checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+        ).bind(id, subId, cv.identity_scheme_hash, key, data.source_id ?? null, dataJson, it.content_hash, cv.hash_scheme_hash, textOf(data), link, pub, run.baseline_run ? 1 : 0, runId, now, runId, now, image?.url ?? null, image?.source ?? null, checkedAt),
         env.DB.prepare("INSERT INTO item_revisions (id, item_id, run_id, content_hash, data_json, change_kind, created_at) VALUES (?, ?, ?, ?, ?, 'created', ?)").bind(newId(), id, runId, it.content_hash, dataJson, now),
         env.DB.prepare("INSERT OR IGNORE INTO item_observations (run_id, item_id, page_seq, position) VALUES (?, ?, ?, ?)").bind(runId, id, p.seq, it.position),
       );
@@ -148,6 +153,12 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
     if (observed.has(ex.id)) continue; // 同じ実行で既に計上済み（再送など）
     nSeen++;
     stmts.push(env.DB.prepare("INSERT OR IGNORE INTO item_observations (run_id, item_id, page_seq, position) VALUES (?, ?, ?, ?)").bind(runId, ex.id, p.seq, it.position));
+    // 画像は変更検知の対象外。配信元の指定は常に反映し、og:image は確認したときだけ反映する（見つからなくても既存の画像は消さない）
+    if (feedImage) stmts.push(env.DB.prepare("UPDATE items SET image_url = ?, image_source = 'feed' WHERE id = ? AND image_url IS NOT ?").bind(feedImage, ex.id, feedImage));
+    else if (it.image_lookup)
+      stmts.push(
+        env.DB.prepare("UPDATE items SET image_url = COALESCE(?, image_url), image_source = CASE WHEN ? IS NOT NULL THEN 'og_image' ELSE image_source END, image_checked_at = ? WHERE id = ?").bind(ogImage, ogImage, now, ex.id),
+      );
     if (ex.hash_scheme !== cv.hash_scheme_hash) {
       // ハッシュ定義の変更：更新とはみなさず再計算値で置き換える
       stmts.push(
@@ -304,6 +315,9 @@ async function finalizeRun(env: Env, run: RunRow, body: CompleteSubmission, hook
     if (["max_pages", "max_actions", "max_duration"].includes(body.end_reason)) healthDetail = `上限到達で終了 (${body.end_reason})`;
   }
   const success = outcome.runStatus === "completed";
+  // リンク先 og:image の試行結果を購読に記憶する（以降は自動で取得／取得しない）
+  const ii = body.item_images;
+  const learnedImageMode = !sub.item_image_mode && ii?.mode === "trial" && ii.tried > 0 ? (ii.found > 0 ? "og_image" : "off") : null;
   const changed = outcome.changeStatus === "changed";
   const consecutiveFailures = success ? 0 : sub.consecutive_failures + 1;
   const consecutiveExtract = extractProblem ? sub.consecutive_extract_failures + 1 : success ? 0 : sub.consecutive_extract_failures;
@@ -348,6 +362,7 @@ async function finalizeRun(env: Env, run: RunRow, body: CompleteSubmission, hook
       now,
       sub.id,
     ),
+    ...(learnedImageMode ? [env.DB.prepare("UPDATE subscriptions SET item_image_mode = ? WHERE id = ? AND item_image_mode IS NULL").bind(learnedImageMode, sub.id)] : []),
   ]);
 
   // 成功時の最新スナップショットは期限なしで保持（修正提案の比較元）
