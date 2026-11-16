@@ -1,0 +1,200 @@
+// 共通情報モデル（docs/design.md §2）
+
+export type TextType = "text" | "html" | "xhtml";
+
+export interface Text {
+  type: TextType;
+  value: string;
+  lang?: string;
+  base?: string;
+}
+
+export interface Person {
+  name?: string;
+  email?: string;
+  uri?: string;
+  /** 元表記（RSS の "a@example.com (Name)" など） */
+  raw?: string;
+}
+
+export interface Category {
+  term: string;
+  scheme?: string;
+  label?: string;
+}
+
+export interface Link {
+  href: string;
+  href_raw?: string;
+  rel: string;
+  media_type?: string;
+  hreflang?: string;
+  title?: string;
+  length_bytes?: number;
+}
+
+export interface Image {
+  url: string;
+  title?: string;
+  link?: string;
+  description?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface Generator {
+  name: string;
+  uri?: string;
+  version?: string;
+}
+
+export type DatePrecision = "year" | "month" | "date" | "datetime" | "unknown";
+
+export interface DateValue {
+  raw: string;
+  /** precision=date なら YYYY-MM-DD、datetime なら RFC3339。架空の時刻は付けない */
+  value: string | null;
+  precision: DatePrecision;
+  tz: "explicit" | "assumed" | "none";
+  assumed_tz?: string;
+  parse_error?: string;
+}
+
+export type Content =
+  | { kind: "inline"; type: string; value: string; encoding?: "base64"; lang?: string; base?: string }
+  | { kind: "external"; src: string; type?: string };
+
+export interface ExtensionAttr {
+  ns: string | null;
+  local: string;
+  value: string;
+}
+
+export interface Extension {
+  ns: string | null;
+  prefix?: string;
+  local: string;
+  attrs: ExtensionAttr[];
+  text?: string;
+  children?: Extension[];
+  /** 元XML断片 */
+  xml: string;
+}
+
+export interface RssCloud {
+  domain?: string;
+  port?: number;
+  path?: string;
+  register_procedure?: string;
+  protocol?: string;
+}
+
+export interface RssTextInput {
+  title?: string;
+  description?: string;
+  name?: string;
+  link?: string;
+}
+
+export type ChannelNative =
+  | {
+      format: "rss2";
+      version?: string;
+      ttl?: number;
+      skip_hours?: number[];
+      skip_days?: string[];
+      cloud?: RssCloud;
+      managing_editor?: Person;
+      web_master?: Person;
+      docs?: string;
+      rating?: string;
+      text_input?: RssTextInput;
+      image?: Image;
+    }
+  | { format: "rss1"; about?: string; image?: Image; text_input?: RssTextInput }
+  | { format: "atom" }
+  | { format: "html"; document_url: string; extracted_fields: Record<string, unknown> };
+
+export interface ChannelData {
+  source_id?: string;
+  title?: Text;
+  description?: Text;
+  links: Link[];
+  language?: string;
+  authors: Person[];
+  contributors: Person[];
+  categories: Category[];
+  rights?: Text;
+  published_at?: DateValue;
+  updated_at?: DateValue;
+  icon?: Image;
+  logo?: Image;
+  generator?: Generator;
+  native: ChannelNative;
+  extensions: Extension[];
+}
+
+/** Item.source：転載元。items は持たない */
+export type SourceChannel = Omit<ChannelData, "native"> & { native?: ChannelNative };
+
+export type ItemNative =
+  | {
+      format: "rss2" | "rss1";
+      guid?: { value: string; is_perma_link: boolean };
+      comments?: string;
+      /** RSS description 原文。要約とも全文とも断定しない */
+      description_raw?: string;
+      description_role?: "unknown";
+      about?: string;
+    }
+  | { format: "atom" }
+  | { format: "html"; extracted_fields: Record<string, unknown> };
+
+export interface ItemData {
+  source_id?: string;
+  title?: Text;
+  links: Link[];
+  summary?: Text;
+  content?: Content;
+  authors: Person[];
+  contributors: Person[];
+  categories: Category[];
+  rights?: Text;
+  language?: string;
+  published_at?: DateValue;
+  updated_at?: DateValue;
+  source?: SourceChannel;
+  native: ItemNative;
+  extensions: Extension[];
+}
+
+export function emptyChannel(native: ChannelNative): ChannelData {
+  return { links: [], authors: [], contributors: [], categories: [], native, extensions: [] };
+}
+
+export function emptyItem(native: ItemNative): ItemData {
+  return { links: [], authors: [], contributors: [], categories: [], native, extensions: [] };
+}
+
+/** 閲覧用URL（rel=alternate の先頭） */
+export function primaryLink(item: Pick<ItemData, "links">): string | undefined {
+  return item.links.find((l) => l.rel === "alternate")?.href;
+}
+
+// ---- 検証（元形式とアプリ利用可否を分離） ----
+
+export interface ValidationIssue {
+  level: "warning" | "error";
+  code: string;
+  message: string;
+  path?: string;
+}
+
+/** アプリで利用可能か（RSS/Atom の必須条件とは別） */
+export function appValidateItem(item: ItemData): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const hasDisplay =
+    !!item.title?.value || !!primaryLink(item) || !!item.summary?.value || (item.content?.kind === "inline" && !!item.content.value);
+  if (!hasDisplay) issues.push({ level: "error", code: "no_displayable_field", message: "title/link/summary/content のいずれもない" });
+  return issues;
+}

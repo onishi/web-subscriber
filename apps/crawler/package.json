@@ -1,0 +1,23 @@
+{
+  "name": "@ws/crawler",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:inject": "esbuild ../../packages/shared/src/dom/index.ts --bundle --format=iife --global-name=__wsBundle --target=chrome120 --outfile=dist/inject.js",
+    "build": "pnpm build:inject && esbuild src/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/main.js",
+    "start": "node dist/main.js",
+    "test": "pnpm build:inject && vitest run",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ws/shared": "workspace:*",
+    "@xmldom/xmldom": "0.9.12",
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "@types/node": "22.19.1",
+    "tsx": "4.20.6"
+  }
+}

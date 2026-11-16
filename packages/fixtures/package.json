@@ -1,0 +1,8 @@
+{
+  "name": "@ws/fixtures",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/server.mjs",
+  "scripts": { "start": "node src/server.mjs" }
+}
