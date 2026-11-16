@@ -114,7 +114,7 @@ sudo loginctl enable-linger app
 初回のみ（VPS 上、`app` ユーザーで）：clone して依存パッケージを入れます（Node.js 22 以上を nvm で用意）。
 
 ```bash
-git clone https://github.com/onishi/web-subscriber /home/app/apps/web-subscriber && cd /home/app/apps/web-subscriber && corepack pnpm install --frozen-lockfile --filter @ws/crawler...
+git clone git@github.com:onishi/web-subscriber.git /home/app/apps/web-subscriber && cd /home/app/apps/web-subscriber && corepack pnpm install --frozen-lockfile --filter @ws/crawler...
 ```
 
 ```bash
