@@ -31,6 +31,7 @@ userApi.get("/subscriptions", async (c) => {
   const rs = await c.env.DB.prepare(
     `SELECT s.*, json_extract(cv.config_json, '$.fetch.method') AS config_method, json_extract(cv.config_json, '$.source.kind') AS config_kind,
        json_extract(ch.data_json, '$.title.value') AS channel_title,
+       json_extract(ch.data_json, '$.logo.url') AS channel_logo,
        (SELECT COUNT(*) FROM items i WHERE i.subscription_id = s.id AND i.is_baseline = 0 AND NOT EXISTS (SELECT 1 FROM reading_states r WHERE r.item_id = i.id AND r.user_id = ?)) AS unread_count,
        (SELECT COUNT(*) FROM items i WHERE i.subscription_id = s.id) AS item_count,
        (SELECT COUNT(*) FROM jobs j WHERE j.subscription_id = s.id AND j.kind = 'crawl' AND j.status IN ('queued','leased')) AS active_jobs,

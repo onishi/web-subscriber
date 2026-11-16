@@ -51,7 +51,10 @@ export function SubscriptionsPage() {
               return (
                 <tr key={s.id}>
                   <td>
-                    <Link to={`/subscriptions/${s.id}`}>{s.display_title || s.channel_title || s.input_url}</Link>
+                    <div className="row">
+                      {s.channel_logo && <img className="logo-sm" src={s.channel_logo} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = "none")} />}
+                      <Link to={`/subscriptions/${s.id}`}>{s.display_title || s.channel_title || s.input_url}</Link>
+                    </div>
                     <div className="muted small mono">{s.input_url}</div>
                   </td>
                   <td>{methodLabel(s.config_kind, s.config_method)}</td>

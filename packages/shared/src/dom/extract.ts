@@ -297,6 +297,22 @@ function record(stats: FieldFailureStats, field: string, o: FieldOutcome) {
   if (o.reason && s.reasons.length < 5 && !s.reasons.includes(o.reason)) s.reasons.push(o.reason);
 }
 
+/** 文書の og:image（なければ twitter:image） */
+function pageImage(doc: Document, baseUrl: string): string | undefined {
+  for (const key of ["og:image:secure_url", "og:image", "og:image:url", "twitter:image", "twitter:image:src"]) {
+    const el = doc.querySelector(`meta[property="${key}"], meta[name="${key}"]`);
+    const v = el?.getAttribute("content")?.trim();
+    if (!v) continue;
+    try {
+      const u = new URL(v, baseUrl);
+      if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
+    } catch {
+      /* 次の候補へ */
+    }
+  }
+  return undefined;
+}
+
 export function extractItemFrom(node: Node, fields: Record<string, FieldRule>, env: ExtractEnv, stats: FieldFailureStats): ExtractedItem {
   const data = emptyItem({ format: "html", extracted_fields: {} });
   const extracted: Record<string, unknown> = {};
@@ -342,6 +358,10 @@ export function extractPage(config: SubscriptionConfig, env: ExtractEnv): PageEx
     if (t && !("title" in ex.channel.fields)) ch.title = { type: "text", value: t };
   }
   if (!ch.links.length) ch.links.push({ href: env.baseUrl, rel: "alternate" });
+  if (!ch.logo) {
+    const og = pageImage(env.doc, env.baseUrl);
+    if (og) ch.logo = { url: og };
+  }
   ch.native = { format: "html", document_url: env.baseUrl, extracted_fields: chExtracted };
   res.channel = ch;
 

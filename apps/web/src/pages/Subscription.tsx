@@ -70,6 +70,7 @@ export function SubscriptionPage() {
   return (
     <div>
       <div className="row">
+        {data.channel?.logo?.url && <img className="logo" src={data.channel.logo.url} alt="" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = "none")} />}
         <h2>{s.display_title || data.channel?.title?.value || s.input_url}</h2>
         <span className="spacer" />
         {s.status === "active" && (

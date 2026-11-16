@@ -90,6 +90,11 @@ describe("extractPage", () => {
     expect(r.items[1].data.links[0].href).toBe("https://example.com/news/2");
     expect(r.field_failures.published_at.no_match).toBe(1);
   });
+  it("ページの og:image をチャンネルのロゴにする", () => {
+    const d = new JSDOM(`<html><head><meta property="og:image" content="/img/ogp.png"></head><body><ul class="news"></ul></body></html>`).window.document;
+    expect(extractPage(cfg, env(d)).channel?.logo?.url).toBe("https://example.com/img/ogp.png");
+    expect(extractPage(cfg, env(doc(`<ul class="news"></ul>`))).channel?.logo).toBeUndefined();
+  });
   it("正常0件と構造破損を区別", () => {
     expect(extractPage(cfg, env(doc(`<ul class="news"></ul><p class="none">なし</p>`)))).toMatchObject({ status: "success", items: [] });
     expect(extractPage(cfg, env(doc(`<ul class="news"></ul>`)))).toMatchObject({ status: "success" });
