@@ -276,7 +276,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       const res = await sdo(step, `ai-turn-${turn}`, { retries: { limit: 2, delay: "15 seconds", backoff: "exponential" }, timeout: "10 minutes" }, async () => {
         const msgs = (await (await env.BLOBS.get(key(String(turn))))!.json()) as Content[];
         const r = await client.models.generateContent({
-          model: env.GEMINI_MODEL || "gemini-2.5-flash",
+          model: env.GEMINI_MODEL || "gemini-3.5-flash-lite",
           contents: msgs,
           config: {
             systemInstruction: SYSTEM_PROMPT,
