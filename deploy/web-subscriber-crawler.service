@@ -1,15 +1,12 @@
-# さくらVPS 用 systemd ユニット（/etc/systemd/system/web-subscriber-crawler.service）
+# systemd ユーザーユニット（app ユーザーの ~/.config/systemd/user/ に置く）
+# pnpm vps:deploy が @APP_DIR@ を置換して配置する。
 [Unit]
 Description=Web Subscriber crawler
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
-User=webcrawler
-WorkingDirectory=/opt/web-subscriber/apps/crawler
-EnvironmentFile=/etc/web-subscriber/crawler.env
-ExecStart=/usr/bin/node dist/main.js
+WorkingDirectory=@APP_DIR@
+ExecStart=@APP_DIR@/scripts/vps/run-crawler.sh
 Restart=always
 RestartSec=10
 # 停止時は実行中ジョブの完了を最大60秒待つ
@@ -17,4 +14,4 @@ TimeoutStopSec=75
 KillSignal=SIGTERM
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

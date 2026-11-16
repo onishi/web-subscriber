@@ -5,3 +5,5 @@ dist/
 .env
 .dev.vars
 apps/crawler/data/
+.env.vps
+.env.crawler

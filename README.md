@@ -103,14 +103,44 @@ cd apps/api && node scripts/create-worker-token.mjs sakura-vps --remote
 
 ### さくらVPS
 
+クローラは `app` ユーザーの systemd ユーザーユニットとして常駐させます（cinema-timetable と同じ `app` ユーザー・nvm の Node を使い、デプロイに sudo は不要）。
+
+初回のみ（VPS 上、root 権限が必要な作業）：ログアウト後もユーザーユニットを動かすための linger と、Chromium の依存パッケージ。
+
 ```bash
-git clone https://github.com/onishi/web-subscriber /opt/web-subscriber && cd /opt/web-subscriber && pnpm install && npx --prefix apps/crawler playwright install --with-deps chromium && pnpm --filter @ws/crawler build
+sudo loginctl enable-linger app
 ```
 
-`deploy/crawler.env.example` を `/etc/web-subscriber/crawler.env` にコピーして値を設定し、`deploy/web-subscriber-crawler.service` を systemd に登録します。
+初回のみ（VPS 上、`app` ユーザーで）：clone して依存パッケージを入れます（Node.js 22 以上を nvm で用意）。
 
 ```bash
-sudo systemctl enable --now web-subscriber-crawler
+git clone https://github.com/onishi/web-subscriber /home/app/apps/web-subscriber && cd /home/app/apps/web-subscriber && corepack pnpm install --frozen-lockfile --filter @ws/crawler...
+```
+
+```bash
+cd /home/app/apps/web-subscriber/apps/crawler && sudo env PATH="$PATH" npx playwright install-deps chromium
+```
+
+`.env.crawler.example` を `/home/app/apps/web-subscriber/.env.crawler` にコピーして値を設定します（`WS_WORKER_TOKEN` は上の `create-worker-token.mjs sakura-vps --remote` で発行したもの）。
+
+ローカルで `.env.vps.example` を `.env.vps` にコピーして `WS_VPS_HOST` を設定したら、以降のデプロイはローカルから：
+
+```bash
+pnpm vps:deploy
+```
+
+`git pull` → クローラ依存のみ `pnpm install` → `playwright install chromium` → ビルド → `deploy/web-subscriber-crawler.service` を `~/.config/systemd/user/` に配置 → 再起動、までを ssh 越しに行います。`--dry-run` を付けると実行するコマンドを表示するだけになります。
+
+```bash
+pnpm vps:status
+```
+
+```bash
+pnpm vps:logs
+```
+
+```bash
+pnpm vps:restart
 ```
 
 User-Agent は `Web-Subscriber/0.0.1 (+<WS_CONTACT_URL>)`（browser 方式では Chromium の UA に付加）。robots.txt には `Web-Subscriber` トークンで従います。
