@@ -4,6 +4,7 @@ import { settings } from "./settings.js";
 import { lease, heartbeat, send, uploadArtifact, flushOutbox, outboxSize } from "./api.js";
 import { crawl } from "./crawl.js";
 import { ImageEnricher } from "./images.js";
+import { DetailEnricher } from "./detail.js";
 import { runProbe } from "./probe.js";
 import { engineVersion, closeBrowser } from "./browser.js";
 import { pruneHttpCache } from "./net.js";
@@ -32,6 +33,7 @@ async function handleCrawl(job: LeasedJob) {
   const images = job.item_images
     ? new ImageEnricher(job.item_images, { minIntervalMs: cfg.politeness.min_interval_ms, respectRobots: cfg.politeness.respect_robots_txt })
     : undefined;
+  const detail = job.detail && cfg.detail ? new DetailEnricher(cfg, job.detail) : undefined;
   const outcome = await crawl(cfg, {
     page: async (p) => {
       pageNo++;
@@ -42,7 +44,7 @@ async function handleCrawl(job: LeasedJob) {
       }).catch((e) => log(`[run ${runId}] page ${p.page.seq} deferred: ${(e as Error).message}`));
     },
     artifact: (name, data, ct) => uploadArtifact("runs", runId, name, data, ct),
-  }, { images });
+  }, { images, detail });
   const body: CompleteSubmission = {
     lease_token: job.lease_token,
     submission_key: `${job.job_id}:${job.attempt}:complete`,
@@ -60,9 +62,10 @@ async function handleCrawl(job: LeasedJob) {
     engine_version: await engineVersion(),
     retryable: outcome.retryable,
     item_images: images?.stats(),
+    detail: detail?.stats(),
   };
   await send(`run:${runId}`, `/worker/v1/runs/${runId}/complete`, body).catch((e) => log(`[run ${runId}] complete deferred: ${(e as Error).message}`));
-  log(`[run ${runId}] ${outcome.traversal} ${outcome.end_reason} extract=${outcome.extract_status} pages=${pageNo}${images ? ` og_image=${images.found}/${images.tried}(${job.item_images!.mode})` : ""}${outcome.error_detail ? " err=" + outcome.error_detail : ""}`);
+  log(`[run ${runId}] ${outcome.traversal} ${outcome.end_reason} extract=${outcome.extract_status} pages=${pageNo}${detail ? ` detail=${detail.ok}/${detail.tried}` : ""}${images ? ` og_image=${images.found}/${images.tried}(${job.item_images!.mode})` : ""}${outcome.error_detail ? " err=" + outcome.error_detail : ""}`);
 }
 
 async function handleProbe(job: LeasedJob) {

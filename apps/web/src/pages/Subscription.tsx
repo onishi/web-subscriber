@@ -106,6 +106,21 @@ export function SubscriptionPage() {
         >
           AIで設定を見直す
         </button>
+        {s.active_config_version_id && (
+          <button
+            title="一覧に本文がないとき、リンク先の複数ページを AI が比較して取得ルールを作ります"
+            onClick={async () => {
+              try {
+                const r = await api<any>(`/subscriptions/${s.id}/detail-setup`, { method: "POST" });
+                location.href = `/setup/${r.setup_session_id}`;
+              } catch (e) {
+                alert((e as Error).message);
+              }
+            }}
+          >
+            {cfg?.detail ? "リンク先の取得ルールを作り直す" : "リンク先から本文を取得（AI）"}
+          </button>
+        )}
       </div>
       <div className="panel">
         <div className="kv small">
@@ -118,7 +133,10 @@ export function SubscriptionPage() {
             {s.health_detail && <span className="muted">{s.health_detail}</span>}
           </div>
           <div>現在の取得方式</div>
-          <div>{cfg ? `${methodLabel(cfg.source.kind, cfg.fetch.method)}（設定 v${data.active_config.version}）` : "未設定"}</div>
+          <div>
+            {cfg ? `${methodLabel(cfg.source.kind, cfg.fetch.method)}（設定 v${data.active_config.version}）` : "未設定"}
+            {cfg?.detail && <span className="muted">・リンク先から {Object.keys(cfg.detail.fields).join(", ")} を取得</span>}
+          </div>
           <div>最終試行</div>
           <div>{fmtTime(s.last_attempt_at)}</div>
           <div>最終成功</div>

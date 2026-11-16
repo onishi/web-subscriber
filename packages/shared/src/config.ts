@@ -121,6 +121,27 @@ export const DisabledWhenSchema = z.union([
   z.object({ has_class: z.string() }).strict(),
 ]);
 
+/**
+ * item のリンク先（詳細ページ）からの追加取得。一覧に本文がないサイト向け。
+ * fields は詳細ページの文書全体を起点に評価する（item 抽出と同じ FieldRule）。
+ */
+export const DetailSchema = z
+  .object({
+    fetch: z
+      .object({ method: z.enum(["http", "browser"]), timeout_ms: z.number().int().min(1000).max(60000).default(30000) })
+      .strict()
+      .default({ method: "http", timeout_ms: 30000 }),
+    /** browser 方式での準備完了待ち（exists / visible / stable などの文書に対する条件） */
+    wait: WaitSchema.optional(),
+    fields: z.record(z.string(), FieldRuleSchema),
+    /** always: 全 item / missing_content: 一覧で summary も content も取れなかった item のみ */
+    when: z.enum(["always", "missing_content"]).default("always"),
+    /** 1回の実行で取得する詳細ページ数の上限（残りは次回） */
+    max_per_run: z.number().int().min(1).max(100).default(30),
+  })
+  .strict();
+export type DetailConfig = z.infer<typeof DetailSchema>;
+
 export const ITEM_FIELD_NAMES = [
   "source_id",
   "title",
@@ -218,6 +239,7 @@ export const ConfigSchema = z
       .strict()
       .default({ min_interval_ms: 1500, respect_robots_txt: true }),
     timezone: z.string().default("Asia/Tokyo"),
+    detail: DetailSchema.nullable().default(null),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -226,6 +248,7 @@ export const ConfigSchema = z
     if (c.paging.mode !== "none" && !c.paging.next) ctx.addIssue({ code: "custom", message: "paging.next が必要", path: ["paging", "next"] });
     if (c.paging.mode !== "none" && c.fetch.method !== "browser")
       ctx.addIssue({ code: "custom", message: "クリックによるページングは browser 方式が必要", path: ["paging", "mode"] });
+    if (c.detail && Object.keys(c.detail.fields).length === 0) ctx.addIssue({ code: "custom", message: "detail.fields が必要", path: ["detail", "fields"] });
     if ((c.identity.method === "fields" || c.identity.method === "content_hash") && c.identity.fields.length === 0)
       ctx.addIssue({ code: "custom", message: "identity.fields が必要", path: ["identity", "fields"] });
   });
@@ -242,6 +265,10 @@ export function parseConfig(input: unknown): { ok: true; config: SubscriptionCon
 /** 識別・ハッシュ方式の同一性判定に使う部分 */
 export function identityScheme(c: SubscriptionConfig) {
   return { method: c.identity.method, fields: c.identity.fields, link_normalization: c.identity.link_normalization };
+}
+/** 詳細ページ取得の方式。変わったら取得済みの item も取り直す */
+export function detailScheme(d: DetailConfig) {
+  return { method: d.fetch.method, fields: d.fields };
 }
 export function hashScheme(c: SubscriptionConfig) {
   return { fields: [...c.change_detection.fields].sort() };

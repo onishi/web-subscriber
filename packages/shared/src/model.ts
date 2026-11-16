@@ -214,6 +214,26 @@ export function itemImageFromData(item: ItemData): string | undefined {
   return undefined;
 }
 
+/**
+ * 一覧の item に詳細ページから取得した値を重ねる。詳細側で取れたフィールドを優先し、
+ * 取れなかったフィールドは一覧の値を残す。閲覧URL（alternate）は一覧のものを保つ。
+ */
+export function mergeDetail(item: ItemData, detail: ItemData | null | undefined): ItemData {
+  if (!detail) return item;
+  const out: ItemData = { ...item };
+  for (const k of ["title", "summary", "content", "rights", "language", "published_at", "updated_at"] as const) {
+    if (detail[k] !== undefined) (out as unknown as Record<string, unknown>)[k] = detail[k];
+  }
+  if (detail.authors.length) out.authors = detail.authors;
+  if (detail.contributors.length) out.contributors = detail.contributors;
+  if (detail.categories.length) out.categories = detail.categories;
+  const extra = detail.links.filter((l) => l.rel !== "alternate" && !item.links.some((x) => x.href === l.href && x.rel === l.rel));
+  if (extra.length) out.links = [...item.links, ...extra];
+  if (item.native.format === "html" && detail.native.format === "html")
+    out.native = { ...item.native, extracted_fields: { ...item.native.extracted_fields, ...detail.native.extracted_fields } };
+  return out;
+}
+
 // ---- 検証（元形式とアプリ利用可否を分離） ----
 
 export interface ValidationIssue {

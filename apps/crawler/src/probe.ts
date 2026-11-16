@@ -7,6 +7,7 @@ import { openPage, ws } from "./browser.js";
 import { checkRobots, httpGet } from "./net.js";
 import { parseFeed, looksLikeFeed } from "./feed.js";
 import { crawl, type CrawlOutcome, type PageInfo } from "./crawl.js";
+import { fetchDetail } from "./detail.js";
 
 type Artifact = (name: string, data: Buffer, contentType: string) => Promise<string | null>;
 
@@ -212,6 +213,89 @@ async function inspect(req: Extract<ProbeRequest, { kind: "inspect" }>) {
   }
 }
 
+/** 詳細ページの構造調査：AI が複数ページを比較できるよう、各ページのアウトラインとメタ情報を返す */
+async function outlinePages(req: Extract<ProbeRequest, { kind: "outline" }>) {
+  const pages = [];
+  for (const url of req.urls.slice(0, 4)) {
+    const cfg = minimalConfig(url, req.method);
+    try {
+      if (req.method === "http") {
+        const r = await httpGet(url, { timeoutMs: 30000, minIntervalMs: 1000, cacheTtlMs: settings.httpCacheLinkTtlMs });
+        if (r.status < 200 || r.status >= 300) {
+          pages.push({ url, status: r.status });
+          continue;
+        }
+        const op = await openPage(cfg, "static", { url: r.url, status: r.status, body: r.body, headers: r.headers });
+        try {
+          await op.page.goto(r.url, { waitUntil: "domcontentloaded" });
+          const o = await ws(op.page, "buildOutline", 10000);
+          pages.push({ url, status: r.status, meta: await ws(op.page, "pageMeta"), text_length: o.text_length, outline: o.outline });
+        } finally {
+          await op.close();
+        }
+      } else {
+        const op = await openPage(cfg, "browser");
+        try {
+          await op.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+          await op.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+          const o = await ws(op.page, "buildOutline", 10000);
+          pages.push({ url, status: op.lastMainResponse()?.status ?? null, meta: await ws(op.page, "pageMeta"), text_length: o.text_length, outline: o.outline });
+        } finally {
+          await op.close();
+        }
+      }
+    } catch (e) {
+      pages.push({ url, error: (e as Error).message.split("\n")[0] });
+    }
+  }
+  return { method: req.method, pages };
+}
+
+/** 詳細ページ取得ルールの試行：各ページの抽出結果とフィールドごとの充足率 */
+export async function runDetailProbe(req: Extract<ProbeRequest, { kind: "detail" }>) {
+  const detail = req.config.detail;
+  if (!detail) throw new Error("config.detail がありません");
+  const fieldNames = Object.keys(detail.fields);
+  const pages = [];
+  const filled: Record<string, number> = Object.fromEntries(fieldNames.map((f) => [f, 0]));
+  for (const url of req.urls.slice(0, 6)) {
+    const { result } = await fetchDetail(req.config, detail, url);
+    if (!result) {
+      pages.push({ url, ok: false, error: "temporary_failure" });
+      continue;
+    }
+    const failed = new Set((result.failures ?? []).map((f) => f.field));
+    for (const f of fieldNames) if (result.data && !failed.has(f)) filled[f]++;
+    const d = result.data;
+    pages.push({
+      url,
+      ok: result.ok,
+      http_status: result.http_status,
+      error: result.error,
+      failures: result.failures,
+      values: d && {
+        title: d.title?.value,
+        summary: d.summary?.value?.slice(0, 400),
+        content_head: d.content?.kind === "inline" ? d.content.value.slice(0, 400) : undefined,
+        content_len: d.content?.kind === "inline" ? d.content.value.length : 0,
+        published_at: d.published_at,
+        updated_at: d.updated_at,
+        authors: d.authors,
+        categories: d.categories,
+        extracted: d.native.format === "html" ? d.native.extracted_fields : undefined,
+      },
+    });
+  }
+  const n = pages.length || 1;
+  return {
+    method: detail.fetch.method,
+    page_count: pages.length,
+    ok_pages: pages.filter((p) => p.ok).length,
+    field_fill: Object.fromEntries(fieldNames.map((f) => [f, Math.round((filled[f] / n) * 100) / 100])),
+    pages,
+  };
+}
+
 export async function runProbe(req: ProbeRequest, artifact: Artifact): Promise<unknown> {
   switch (req.kind) {
     case "discover":
@@ -220,5 +304,9 @@ export async function runProbe(req: ProbeRequest, artifact: Artifact): Promise<u
       return runExtractProbe(req.config, req.max_pages, req.methods ?? [req.config.fetch.method], artifact);
     case "inspect":
       return inspect(req);
+    case "outline":
+      return outlinePages(req);
+    case "detail":
+      return runDetailProbe(req);
   }
 }

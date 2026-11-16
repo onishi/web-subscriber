@@ -153,6 +153,15 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
         <button onClick={onUnread}>未読に戻す</button>
       </div>
       <div className="kv small" style={{ margin: "10px 0" }}>
+        {data.detail_checked_at && (
+          <>
+            <div>リンク先</div>
+            <div>
+              {data.detail_status === "ok" ? "詳細ページから取得" : "詳細ページから取得できず"}（{fmtTime(data.detail_checked_at)}）
+              {data.detail_data && <span className="muted">：{Object.keys(data.detail_data).filter((k) => !["links", "authors", "contributors", "categories", "native", "extensions"].includes(k) || (Array.isArray(data.detail_data[k]) && data.detail_data[k].length && k !== "extensions" && k !== "links")).join(", ")}</span>}
+            </div>
+          </>
+        )}
         <div>配信元ID</div>
         <div className="mono">{d.source_id ?? "—"}</div>
         <div>公開日時</div>

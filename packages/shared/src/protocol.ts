@@ -12,7 +12,7 @@ export const USER_AGENT_PRODUCT = "Web-Subscriber";
 export type JobKind = "crawl" | "probe";
 export type RunTrigger = "scheduled" | "manual" | "retry" | "activation";
 
-export type ProbeKind = "discover" | "extract" | "inspect" | "feed";
+export type ProbeKind = "discover" | "extract" | "inspect" | "feed" | "outline" | "detail";
 
 export interface LeasedJob {
   job_id: string;
@@ -27,6 +27,8 @@ export interface LeasedJob {
   config?: SubscriptionConfig;
   /** crawl のとき：リンク先 og:image の取得（未指定なら取得しない） */
   item_images?: ItemImagesInstruction;
+  /** crawl のとき：詳細ページ取得（config.detail があるとき）。skip_keys は現行方式で取得済みの item */
+  detail?: { scheme: string; skip_keys: string[] };
   /** probe のとき */
   probe_id?: string;
   probe?: ProbeRequest;
@@ -44,7 +46,11 @@ export interface ItemImagesInstruction {
 export type ProbeRequest =
   | { kind: "discover"; url: string }
   | { kind: "extract"; config: SubscriptionConfig; max_pages?: number; methods?: ("http" | "browser")[] }
-  | { kind: "inspect"; url: string; method: "http" | "browser"; selector: { css: string } | { xpath: string }; wait_ms?: number };
+  | { kind: "inspect"; url: string; method: "http" | "browser"; selector: { css: string } | { xpath: string }; wait_ms?: number }
+  /** 詳細ページの構造調査（DOMアウトライン・メタ情報） */
+  | { kind: "outline"; urls: string[]; method: "http" | "browser" }
+  /** 詳細ページ取得ルールの試行 */
+  | { kind: "detail"; config: SubscriptionConfig; urls: string[] };
 
 export type PageKind = "initial" | "navigate" | "click_replace" | "click_append";
 
@@ -58,6 +64,18 @@ export interface SubmittedItem {
   data: ItemData;
   /** リンク先の og:image を確認した結果（確認しなかった item には付けない） */
   image_lookup?: { url: string | null };
+  /** 詳細ページから取得した値（取得を試みた item のみ） */
+  detail?: ItemDetailResult;
+}
+
+export interface ItemDetailResult {
+  scheme: string;
+  url: string;
+  ok: boolean;
+  http_status: number | null;
+  error?: string;
+  data?: ItemData;
+  failures?: { field: string; status: string; reason?: string }[];
 }
 
 export interface PageSubmission {
@@ -122,6 +140,8 @@ export interface CompleteSubmission {
   retryable?: boolean;
   /** リンク先 og:image の試行結果 */
   item_images?: { mode: "trial" | "on"; tried: number; found: number };
+  /** 詳細ページ取得の結果 */
+  detail?: { tried: number; ok: number };
 }
 
 export interface ProbeResultSubmission {

@@ -47,8 +47,67 @@ function ConfigSummary({ c }: { c: any }) {
       <div className="mono">{c.wait?.initial ? `${JSON.stringify(c.wait.initial.cond)}（${c.wait.initial.timeout_ms}ms）` : "—"}</div>
       <div>操作後待機</div>
       <div className="mono">{c.wait?.after_paging ? `${JSON.stringify(c.wait.after_paging.cond)}（${c.wait.after_paging.timeout_ms}ms）` : "—"}</div>
+      <div>リンク先の取得</div>
+      <div className="mono">
+        {c.detail ? (
+          <>
+            <div>
+              {c.detail.fetch.method} / {c.detail.when === "always" ? "全item" : "本文のないitemのみ"} / 1回 {c.detail.max_per_run} 件まで
+            </div>
+            {Object.entries(c.detail.fields).map(([k, v]: [string, any]) => (
+              <div key={k}>
+                {k}: {v.const !== undefined ? `固定値 ${JSON.stringify(v.const)}` : v.array ? `配列 ${sel(v.array.select)}` : `${sel(v.from)} → ${typeof v.take === "object" ? `@${v.take.attr}` : v.take ?? "text"}`}
+                {v.fallback ? `（代替 ${v.fallback.length}）` : ""}
+              </div>
+            ))}
+          </>
+        ) : (
+          "—"
+        )}
+      </div>
       <div>robots.txt</div>
       <div>{c.politeness.respect_robots_txt ? "従う" : "従わない"}</div>
+    </div>
+  );
+}
+
+function DetailValidation({ v }: { v: any }) {
+  return (
+    <div>
+      <h3>
+        リンク先（詳細ページ）：{v.ok_pages}/{v.page_count} ページで取得（{v.method}）
+      </h3>
+      <div className="table-wrap">
+        <table className="small">
+          <thead>
+            <tr>
+              <th>ページ</th>
+              <th>状態</th>
+              <th>取得した値</th>
+            </tr>
+          </thead>
+          <tbody>
+            {v.pages.map((p: any) => (
+              <tr key={p.url}>
+                <td className="mono">
+                  <a href={p.url} target="_blank" rel="noopener noreferrer">
+                    {p.url.replace(/^https?:\/\/[^/]+/, "")}
+                  </a>
+                </td>
+                <td>
+                  <span className={`badge ${p.ok ? "ok" : "err"}`}>{p.ok ? "OK" : p.error ?? "NG"}</span>
+                  {p.failures?.length > 0 && <div className="muted">未取得: {p.failures.map((f: any) => f.field).join(", ")}</div>}
+                </td>
+                <td>
+                  {p.values?.summary && <div>{p.values.summary.slice(0, 160)}</div>}
+                  {p.values?.content_len > 0 && <div className="muted">本文 {p.values.content_len} 文字</div>}
+                  {p.values?.published_at?.raw && <div className="muted">日付 {p.values.published_at.raw}</div>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -217,6 +276,7 @@ export function ConfigReview({ cvId }: { cvId: string }) {
               <ValidationResult v={report.validation.secondary} title="比較方式" />
             </details>
           )}
+          {report.validation.detail && <DetailValidation v={report.validation.detail} />}
         </div>
       )}
 

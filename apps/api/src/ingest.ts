@@ -126,6 +126,8 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
     const ogImage = it.image_lookup?.url ?? null;
     const image = feedImage ? { url: feedImage, source: "feed" } : ogImage ? { url: ogImage, source: "og_image" } : null;
     const checkedAt = it.image_lookup ? now : null;
+    const det = it.detail;
+    const detailJson = det?.ok && det.data ? JSON.stringify(det.data) : null;
     let ex = existing.get(key);
 
     // 識別方式変更後の再基準化：副キー（source_id → 閲覧URL）で旧itemへ付け替え
@@ -146,8 +148,13 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
       stmts.push(
         env.DB.prepare(
           `INSERT INTO items (id, subscription_id, identity_scheme, identity_key, source_id, data_json, content_hash, hash_scheme, title_text, primary_link, published_sort, is_baseline,
-            first_seen_run_id, first_seen_at, last_seen_run_id, last_seen_at, revision_count, image_url, image_source, image_checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-        ).bind(id, subId, cv.identity_scheme_hash, key, data.source_id ?? null, dataJson, it.content_hash, cv.hash_scheme_hash, textOf(data), link, pub, run.baseline_run ? 1 : 0, runId, now, runId, now, image?.url ?? null, image?.source ?? null, checkedAt),
+            first_seen_run_id, first_seen_at, last_seen_run_id, last_seen_at, revision_count, image_url, image_source, image_checked_at,
+            detail_json, detail_scheme, detail_status, detail_checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          id, subId, cv.identity_scheme_hash, key, data.source_id ?? null, dataJson, it.content_hash, cv.hash_scheme_hash, textOf(data), link, pub, run.baseline_run ? 1 : 0, runId, now, runId, now,
+          image?.url ?? null, image?.source ?? null, checkedAt,
+          detailJson, det?.scheme ?? null, det ? (det.ok ? "ok" : "failed") : null, det ? now : null,
+        ),
         env.DB.prepare("INSERT INTO item_revisions (id, item_id, run_id, content_hash, data_json, change_kind, created_at) VALUES (?, ?, ?, ?, ?, 'created', ?)").bind(newId(), id, runId, it.content_hash, dataJson, now),
         env.DB.prepare("INSERT OR IGNORE INTO item_observations (run_id, item_id, page_seq, position) VALUES (?, ?, ?, ?)").bind(runId, id, p.seq, it.position),
       );
@@ -159,6 +166,11 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
     nSeen++;
     stmts.push(env.DB.prepare("INSERT OR IGNORE INTO item_observations (run_id, item_id, page_seq, position) VALUES (?, ?, ?, ?)").bind(runId, ex.id, p.seq, it.position));
     // 画像は変更検知の対象外。配信元の指定は常に反映し、og:image は確認したときだけ反映する（見つからなくても既存の画像は消さない）
+    // 詳細ページの値も変更検知の対象外。取れなかったときは前回の値を残す
+    if (det)
+      stmts.push(
+        env.DB.prepare("UPDATE items SET detail_json = COALESCE(?, detail_json), detail_scheme = ?, detail_status = ?, detail_checked_at = ? WHERE id = ?").bind(detailJson, det.scheme, det.ok ? "ok" : "failed", now, ex.id),
+      );
     if (feedImage) stmts.push(env.DB.prepare("UPDATE items SET image_url = ?, image_source = 'feed' WHERE id = ? AND image_url IS NOT ?").bind(feedImage, ex.id, feedImage));
     else if (it.image_lookup)
       stmts.push(

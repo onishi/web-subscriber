@@ -1,5 +1,5 @@
 // ジョブ（キュー兼リース）・スケジューラ（docs/design.md §6）
-import type { ItemImagesInstruction, LeasedJob, ProbeRequest, RunTrigger, SubscriptionConfig } from "@ws/shared";
+import { detailScheme, schemeHash, type ItemImagesInstruction, type LeasedJob, type ProbeRequest, type RunTrigger, type SubscriptionConfig } from "@ws/shared";
 import { type Env, newId, nowIso, addMinutes, randomToken, nextRunAt, json } from "./env.js";
 
 const LEASE_MINUTES = 5;
@@ -103,6 +103,8 @@ export async function leaseJobs(env: Env, workerId: string, capacity: number, ki
       }
       await env.DB.prepare("UPDATE crawl_runs SET run_status = 'running', started_at = COALESCE(started_at, ?), worker_id = ? WHERE id = ?").bind(now, workerId, row.run_id).run();
       const itemImages = await itemImagesInstruction(env, row.subscription_id!, run.config_version_id);
+      const config = JSON.parse(run.config_json) as SubscriptionConfig;
+      const detail = config.detail ? await detailInstruction(env, row.subscription_id!, run.config_version_id, config) : null;
       out.push({
         job_id: row.id,
         kind: "crawl",
@@ -112,8 +114,9 @@ export async function leaseJobs(env: Env, workerId: string, capacity: number, ki
         run_id: row.run_id!,
         subscription_id: row.subscription_id!,
         config_version_id: run.config_version_id,
-        config: JSON.parse(run.config_json) as SubscriptionConfig,
+        config,
         ...(itemImages ? { item_images: itemImages } : {}),
+        ...(detail ? { detail } : {}),
       });
     } else {
       const p = await env.DB.prepare("SELECT request_json FROM probes WHERE id = ?").bind(row.probe_id).first<{ request_json: string }>();
@@ -134,6 +137,16 @@ async function itemImagesInstruction(env: Env, subId: string, configVersionId: s
     .bind(subId, cv?.identity_scheme_hash ?? "")
     .all<{ identity_key: string }>();
   return { mode: sub.item_image_mode === "og_image" ? "on" : "trial", skip_keys: rs.results.map((r) => r.identity_key) };
+}
+
+/** 詳細ページ取得の指示。現行の取得方式で取得済みの item は除外する */
+async function detailInstruction(env: Env, subId: string, configVersionId: string, config: SubscriptionConfig): Promise<{ scheme: string; skip_keys: string[] }> {
+  const scheme = await schemeHash(detailScheme(config.detail!));
+  const cv = await env.DB.prepare("SELECT identity_scheme_hash FROM config_versions WHERE id = ?").bind(configVersionId).first<{ identity_scheme_hash: string }>();
+  const rs = await env.DB.prepare("SELECT identity_key FROM items WHERE subscription_id = ? AND identity_scheme = ? AND detail_scheme = ?")
+    .bind(subId, cv?.identity_scheme_hash ?? "", scheme)
+    .all<{ identity_key: string }>();
+  return { scheme, skip_keys: rs.results.map((r) => r.identity_key) };
 }
 
 export async function extendLease(env: Env, jobId: string, token: string): Promise<string | null> {

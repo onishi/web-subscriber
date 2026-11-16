@@ -3,7 +3,15 @@ import { fmtTime } from "../api.js";
 import { useApi } from "../hooks.js";
 import { ConfigReview } from "./Config.js";
 
-const STEP_LABEL: Record<string, string> = { discover: "調査（HTTP / ブラウザ取得）", propose: "取得方法・抽出ルールの提案", validate: "VPSでの検証", error: "エラー", trigger: "起動理由" };
+const STEP_LABEL: Record<string, string> = {
+  discover: "調査（HTTP / ブラウザ取得）",
+  propose: "取得方法・抽出ルールの提案",
+  validate: "VPSでの検証",
+  detail: "リンク先（詳細ページ）",
+  "detail-propose": "詳細ページの取得ルールの提案",
+  error: "エラー",
+  trigger: "起動理由",
+};
 
 export function SetupPage() {
   const { id } = useParams();
@@ -13,7 +21,7 @@ export function SetupPage() {
   return (
     <div>
       <div className="row">
-        <h2>{data.kind === "repair" ? "修正提案" : "AIによる設定生成"}</h2>
+        <h2>{data.kind === "repair" ? "修正提案" : data.kind === "detail" ? "リンク先からの取得ルール作成" : "AIによる設定生成"}</h2>
         <span className="spacer" />
         <Link to={`/subscriptions/${data.subscription_id}`}>購読先へ</Link>
       </div>
@@ -27,7 +35,7 @@ export function SetupPage() {
             <li key={i}>
               <span className={p.status === "done" ? "check-ok" : p.status === "error" ? "check-ng" : ""}>
                 {p.status === "running" ? "⏳ " : p.status === "info" ? "・ " : ""}
-                <b>{STEP_LABEL[p.step] ?? (p.step.startsWith("ai-") ? "AI" : p.step)}</b> {p.detail}
+                <b>{STEP_LABEL[p.step] ?? (p.step.startsWith("ai-") || p.step.startsWith("detail-") ? "AI" : p.step)}</b> {p.detail}
               </span>{" "}
               <span className="muted">{fmtTime(p.at)}</span>
             </li>

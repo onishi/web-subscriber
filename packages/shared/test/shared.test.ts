@@ -4,8 +4,8 @@ import { parseDate, sortKey } from "../src/date.js";
 import { parseConfig } from "../src/config.js";
 import { identityKey, itemContentHash, canonicalJson, channelContentHash } from "../src/hash.js";
 import { decideRunOutcome } from "../src/protocol.js";
-import { emptyItem, emptyChannel, itemImageFromData } from "../src/model.js";
-import { extractPage, evalRule } from "../src/dom/extract.js";
+import { emptyItem, emptyChannel, itemImageFromData, mergeDetail } from "../src/model.js";
+import { extractPage, evalRule, extractItemFrom } from "../src/dom/extract.js";
 import { applyTransforms } from "../src/transforms.js";
 
 describe("parseDate", () => {
@@ -190,5 +190,38 @@ describe("channelContentHash", () => {
     a.title = { type: "text", value: "t" };
     const b = { ...a, logo: { url: "https://ex.com/l.png" }, icon: { url: "https://ex.com/i.png" } };
     expect(await channelContentHash(a)).toBe(await channelContentHash(b));
+  });
+});
+
+describe("detail", () => {
+  it("config.detail is optional and validated", () => {
+    const base = { schema_version: 1, source: { url: "https://ex.com/feed", kind: "feed" }, fetch: { method: "http" }, identity: { method: "link" } };
+    const a = parseConfig(base);
+    expect(a.ok && a.config.detail).toBe(null);
+    const b = parseConfig({ ...base, detail: { fields: { summary: { from: { css: "p.lead" } } } } });
+    expect(b.ok && b.config.detail).toMatchObject({ fetch: { method: "http" }, when: "always", max_per_run: 30 });
+    expect(parseConfig({ ...base, detail: { fields: {} } }).ok).toBe(false);
+  });
+  it("extracts fields from the whole document", () => {
+    const d = new JSDOM(`<html><head><meta name="description" content="メタ説明"></head><body><h1>T</h1><div class="body"><p>本文1</p><p>本文2</p></div></body></html>`).window.document;
+    const r = extractItemFrom(d, { summary: { from: { css: "div.body p" }, cardinality: "first" }, content: { from: { css: "div.body" }, take: "inner_html" }, description: { from: { css: "meta[name=description]" }, take: { attr: "content" } } }, { doc: d, baseUrl: "https://ex.com/a", timezone: "Asia/Tokyo" }, {});
+    expect(r.data.summary?.value).toBe("本文1");
+    expect(r.data.content).toMatchObject({ kind: "inline" });
+    expect(r.data.native.format === "html" && r.data.native.extracted_fields.description).toBe("メタ説明");
+  });
+  it("mergeDetail prefers detail values but keeps list link", () => {
+    const list = emptyItem({ format: "html", extracted_fields: { a: 1 } });
+    list.title = { type: "text", value: "一覧タイトル" };
+    list.summary = { type: "text", value: "2026年10月" };
+    list.links.push({ href: "https://ex.com/a", rel: "alternate" });
+    const det = emptyItem({ format: "html", extracted_fields: { b: 2 } });
+    det.summary = { type: "text", value: "詳しい概要" };
+    det.links.push({ href: "https://ex.com/x.pdf", rel: "enclosure" });
+    const m = mergeDetail(list, det);
+    expect(m.title?.value).toBe("一覧タイトル");
+    expect(m.summary?.value).toBe("詳しい概要");
+    expect(m.links.map((l) => l.rel)).toEqual(["alternate", "enclosure"]);
+    expect(m.native.format === "html" && m.native.extracted_fields).toEqual({ a: 1, b: 2 });
+    expect(mergeDetail(list, null)).toBe(list);
   });
 });

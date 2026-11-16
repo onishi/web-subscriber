@@ -2,7 +2,7 @@
 import { chromium, type Browser, type BrowserContext, type Page, type Response } from "playwright";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { SubscriptionConfig, Cond } from "@ws/shared";
+import type { SubscriptionConfig, Cond, FieldRule, ItemData, FieldFailureStats } from "@ws/shared";
 import type { PageExtraction, ListSnapshot, CondResult, Outline } from "@ws/shared/dom";
 import { assertPublicUrl, browserUserAgent, politeWait, userAgent } from "./net.js";
 import { settings } from "./settings.js";
@@ -125,6 +125,8 @@ type WsApi = {
   buildOutline(max?: number): Outline;
   inspectSelector(sel: unknown): { count: number; samples: string[]; error?: string };
   serialize(): string;
+  extractDetail(fields: Record<string, FieldRule>, timezone: string, baseUrl?: string): { data: ItemData; failures: { field: string; status: string; reason?: string }[]; field_failures: FieldFailureStats };
+  pageMeta(): { title: string; description: string | null; og_title: string | null; og_description: string | null; og_image: string | null };
 };
 
 export async function ws<K extends keyof WsApi>(page: Page, fn: K, ...args: Parameters<WsApi[K]>): Promise<ReturnType<WsApi[K]>> {

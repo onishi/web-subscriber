@@ -9,6 +9,8 @@ import { crawl, type CrawlSink, type PageInfo } from "../src/crawl.js";
 import { parseFeed } from "../src/feed.js";
 import { closeBrowser } from "../src/browser.js";
 import { ImageEnricher, parseOgImage, TRIAL_LIMIT } from "../src/images.js";
+import { DetailEnricher } from "../src/detail.js";
+import { runDetailProbe } from "../src/probe.js";
 import { parseRobots, robotsAllows, httpGet, pruneHttpCache } from "../src/net.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,7 +57,7 @@ function cfg(over: Record<string, unknown>): SubscriptionConfig {
   return r.config;
 }
 
-async function run(c: SubscriptionConfig, images?: ImageEnricher) {
+async function run(c: SubscriptionConfig, images?: ImageEnricher, detail?: DetailEnricher) {
   const pages: PageInfo[] = [];
   const items: SubmittedItem[] = [];
   const outcome = await crawl(c, {
@@ -64,7 +66,7 @@ async function run(c: SubscriptionConfig, images?: ImageEnricher) {
       items.push(...p.items);
     },
     artifact: async () => null,
-  }, { images });
+  }, { images, detail });
   return { outcome, pages, items };
 }
 
@@ -340,5 +342,44 @@ describe("http cache", () => {
       rmSync(dir, { recursive: true, force: true });
       await setState({});
     }
+  });
+});
+
+describe("detail pages", () => {
+  const detailCfg = (max = 30) =>
+    cfg({ source: { url: `${base}/static/list` }, fetch: { method: "http" }, detail: { fields: { summary: { from: { css: "article" }, take: "text" }, heading: { from: { css: "h1" } } }, max_per_run: max } });
+
+  it("fetches detail pages for items and skips known ones", async () => {
+    const c = detailCfg();
+    const d1 = new DetailEnricher(c, { scheme: "s1", skip_keys: [] });
+    const r1 = await run(c, undefined, d1);
+    const withDetail = r1.items.filter((i) => i.detail);
+    expect(withDetail.length).toBe(r1.items.length);
+    const first = withDetail[0].detail!;
+    expect(first).toMatchObject({ scheme: "s1", ok: true, http_status: 200 });
+    expect(first.data?.summary?.value).toMatch(/^本文 \d+$/);
+    expect(d1.stats()).toEqual({ tried: r1.items.length, ok: r1.items.length });
+
+    const skip = r1.items.slice(0, 3).map((i) => i.identity_key!);
+    const d2 = new DetailEnricher(c, { scheme: "s1", skip_keys: skip });
+    const r2 = await run(c, undefined, d2);
+    expect(r2.items.filter((i) => skip.includes(i.identity_key!)).every((i) => !i.detail)).toBe(true);
+    expect(d2.stats().tried).toBe(r2.items.length - 3);
+  });
+
+  it("respects max_per_run", async () => {
+    const c = detailCfg(2);
+    const d = new DetailEnricher(c, { scheme: "s", skip_keys: [] });
+    const r = await run(c, undefined, d);
+    expect(r.items.filter((i) => i.detail).length).toBe(2);
+  });
+
+  it("detail probe reports per-field fill", async () => {
+    const c = detailCfg();
+    c.detail!.fields.missing = { from: { css: ".nope" } };
+    const r = await runDetailProbe({ kind: "detail", config: c, urls: [`${base}/news/1`, `${base}/news/2`, `${base}/error/404`] });
+    expect(r.ok_pages).toBe(2);
+    expect(r.field_fill).toMatchObject({ summary: 0.67, missing: 0 });
+    expect(r.pages[2]).toMatchObject({ ok: false, http_status: 404 });
   });
 });

@@ -21,6 +21,7 @@ import { checkRobots, httpGet, FetchError, BlockedHostError } from "./net.js";
 import { parseFeed, looksLikeFeed } from "./feed.js";
 import { settings } from "./settings.js";
 import { fetchOgImage, type ImageEnricher } from "./images.js";
+import type { DetailEnricher } from "./detail.js";
 
 export type PageInfo = PageSubmission["page"];
 
@@ -61,6 +62,8 @@ export interface CrawlOptions {
   saveSnapshots?: boolean;
   /** リンク先 og:image の取得 */
   images?: ImageEnricher;
+  /** 詳細ページの取得（config.detail） */
+  detail?: DetailEnricher;
 }
 
 export async function crawl(cfg: SubscriptionConfig, sink: CrawlSink, opts: CrawlOptions = {}): Promise<CrawlOutcome> {
@@ -131,6 +134,7 @@ async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
     if (s.identity_key) seen.add(s.identity_key);
     items.push(s);
   }
+  await opts.detail?.enrich(items);
   await opts.images?.enrich(items);
   await sink.page({
     page: { ...pageBase, extract_status: "success", item_count: parsed.items.length },
@@ -140,7 +144,7 @@ async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
   return { ...base, pages_fetched: 1, traversal: "complete", end_reason: "single_page", extract_status: "success", format_validation: parsed.format_validation };
 }
 
-async function waitFor(page: Page, cfg: SubscriptionConfig, w: Wait | undefined, before: ListSnapshot | null): Promise<{ ok: boolean; detail: string; ms: number }> {
+export async function waitFor(page: Page, cfg: SubscriptionConfig, w: Wait | undefined, before: ListSnapshot | null): Promise<{ ok: boolean; detail: string; ms: number }> {
   const t0 = Date.now();
   if (!w) return { ok: true, detail: "no_wait", ms: 0 };
   const poll = w.poll_ms ?? 200;
@@ -261,7 +265,10 @@ async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
       const channel = seq === 0 && ex.channel ? { data: ex.channel, content_hash: await channelContentHash(ex.channel) } : null;
       extractedPages++;
       if (ex.status === "failed") anyExtractFailed = true;
-      if (ex.status !== "failed") await opts.images?.enrich(submitted);
+      if (ex.status !== "failed") {
+        await opts.detail?.enrich(submitted);
+        await opts.images?.enrich(submitted);
+      }
       await sink.page({
         page: {
           seq,

@@ -1,6 +1,6 @@
 // 利用者向け API（docs/design.md §8）
 import { Hono } from "hono";
-import { parseConfig, identityScheme, hashScheme, schemeHash, type ChannelData, type ItemData, type SubscriptionConfig } from "@ws/shared";
+import { parseConfig, identityScheme, hashScheme, schemeHash, mergeDetail, type ChannelData, type ItemData, type SubscriptionConfig } from "@ws/shared";
 import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt } from "../env.js";
 import { type AppVars } from "../auth.js";
 import { enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
@@ -145,6 +145,19 @@ userApi.post("/subscriptions/:id/repair", async (c) => {
     ? await c.env.DB.prepare("SELECT json_extract(config_json, '$.source.url') AS url FROM config_versions WHERE id = ?").bind(s.active_config_version_id).first<{ url: string }>()
     : null;
   const sid = await startSession(c.env, s.id, s.active_config_version_id ? "repair" : "setup", cv?.url ?? s.input_url, last?.id);
+  return c.json({ setup_session_id: sid }, 201);
+});
+
+/** リンク先（詳細ページ）の取得ルールを AI で作る（現行設定に detail を足した設定案を作成） */
+userApi.post("/subscriptions/:id/detail-setup", async (c) => {
+  const s = await getSub(c.env, c.req.param("id"));
+  if (!s) return c.json({ error: "not_found" }, 404);
+  if (!s.active_config_version_id) return c.json({ error: "no_active_config" }, 400);
+  if (!c.env.GEMINI_API_KEY) return c.json({ error: "ai_not_configured" }, 400);
+  const running = await c.env.DB.prepare("SELECT id FROM setup_sessions WHERE subscription_id = ? AND status = 'running'").bind(s.id).first();
+  if (running) return c.json({ error: "session_running" }, 409);
+  const cv = await c.env.DB.prepare("SELECT json_extract(config_json, '$.source.url') AS url FROM config_versions WHERE id = ?").bind(s.active_config_version_id).first<{ url: string }>();
+  const sid = await startSession(c.env, s.id, "detail", cv?.url ?? s.input_url);
   return c.json({ setup_session_id: sid }, 201);
 });
 
@@ -317,7 +330,8 @@ userApi.get("/items", async (c) => {
   args.push(limit + 1, offset);
   const rs = await c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.published_sort, i.is_baseline, i.image_url, i.first_seen_at, i.last_seen_at, i.last_changed_at, i.revision_count,
-       json_extract(i.data_json, '$.summary.value') AS summary, json_extract(i.data_json, '$.summary.type') AS summary_type,
+       COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value')) AS summary,
+       CASE WHEN json_extract(i.detail_json, '$.summary.value') IS NOT NULL THEN json_extract(i.detail_json, '$.summary.type') ELSE json_extract(i.data_json, '$.summary.type') END AS summary_type,
        json_extract(i.data_json, '$.published_at') AS published_at, json_extract(i.data_json, '$.updated_at') AS updated_at,
        COALESCE(s.display_title, json_extract(ch.data_json, '$.title.value'), s.input_url) AS subscription_title,
        rs.read_at
@@ -343,7 +357,10 @@ userApi.get("/items/:id", async (c) => {
   const uid = c.get("userId");
   const it = await c.env.DB.prepare("SELECT * FROM items WHERE id = ?").bind(c.req.param("id")).first<Record<string, string>>();
   if (!it) return c.json({ error: "not_found" }, 404);
-  const data = JSON.parse(it.data_json) as ItemData;
+  // 一覧の値に詳細ページの値を重ねたものを表示用の data とする（元の一覧の値は list_data）
+  const listData = JSON.parse(it.data_json) as ItemData;
+  const detailData = it.detail_json ? (JSON.parse(it.detail_json) as ItemData) : null;
+  const data = mergeDetail(listData, detailData);
   const ch = await c.env.DB.prepare("SELECT data_json FROM channels WHERE subscription_id = ?").bind(it.subscription_id).first<{ data_json: string }>();
   const channel = ch ? (JSON.parse(ch.data_json) as ChannelData) : null;
   // 明示値と有効値（継承）を区別して返す
@@ -357,8 +374,8 @@ userApi.get("/items/:id", async (c) => {
   };
   const revisions = await c.env.DB.prepare("SELECT id, run_id, change_kind, created_at, data_json FROM item_revisions WHERE item_id = ? ORDER BY created_at DESC LIMIT 20").bind(it.id).all<Record<string, string>>();
   const rs = await c.env.DB.prepare("SELECT read_at FROM reading_states WHERE user_id = ? AND item_id = ?").bind(uid, it.id).first<{ read_at: string }>();
-  const { data_json: _d, ...meta } = it;
-  return c.json({ ...meta, data, effective, read_at: rs?.read_at ?? null, revisions: revisions.results.map((r) => ({ ...r, data: json(r.data_json, null), data_json: undefined })) });
+  const { data_json: _d, detail_json: _dj, ...meta } = it;
+  return c.json({ ...meta, data, list_data: detailData ? listData : undefined, detail_data: detailData, effective, read_at: rs?.read_at ?? null, revisions: revisions.results.map((r) => ({ ...r, data: json(r.data_json, null), data_json: undefined })) });
 });
 
 userApi.put("/items/:id/read", async (c) => {
