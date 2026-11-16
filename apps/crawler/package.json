@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build:inject": "esbuild ../../packages/shared/src/dom/index.ts --bundle --format=iife --global-name=__wsBundle --target=chrome120 --outfile=dist/inject.js",
-    "build": "pnpm build:inject && esbuild src/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/main.js",
+    "build": "pnpm build:inject && esbuild src/main.ts --bundle --platform=node --format=esm --target=node22 --external:playwright --external:@xmldom/xmldom --outfile=dist/main.js",
     "start": "node dist/main.js",
     "test": "pnpm build:inject && vitest run",
     "typecheck": "tsc --noEmit -p ."

@@ -1,7 +1,10 @@
 // クローラ(VPS) ⇔ API(Cloudflare) のプロトコル（docs/design.md §6）
 import type { ChannelData, ItemData } from "./model.js";
 import type { SubscriptionConfig } from "./config.js";
-import type { FieldFailureStats } from "./dom/extract.js";
+
+export interface FieldFailureStats {
+  [field: string]: { no_match: number; empty: number; error: number; reasons: string[] };
+}
 
 export const CRAWLER_VERSION = "0.0.1";
 export const USER_AGENT_PRODUCT = "Web-Subscriber";

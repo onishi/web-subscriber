@@ -268,9 +268,8 @@ function assign(target: Target, name: string, o: FieldOutcome, env: ExtractEnv, 
   extracted[name] = v;
 }
 
-export interface FieldFailureStats {
-  [field: string]: { no_match: number; empty: number; error: number; reasons: string[] };
-}
+export type { FieldFailureStats } from "../protocol.js";
+import type { FieldFailureStats } from "../protocol.js";
 
 export interface ExtractedItem {
   data: ItemData;
