@@ -18,8 +18,8 @@
     "DEFAULT_TIMEZONE": "Asia/Tokyo",
     "GEMINI_MODEL": "gemini-3.5-flash-lite",
     "REPAIR_AFTER_FAILURES": "2",
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "https://cinema-timetable.cloudflareaccess.com",
+    "ACCESS_AUD": "fcad61fafeac4321063a1f5e93d4ccafb49f95c9016bd4bf7e95b7c10ed4210d",
     "DEV_AUTH_BYPASS": "0"
   }
 }
