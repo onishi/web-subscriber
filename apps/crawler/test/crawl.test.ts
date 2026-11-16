@@ -5,7 +5,7 @@ import type { Server } from "node:http";
 import { createFixtureServer } from "../../../packages/fixtures/src/server.mjs";
 import { parseConfig, type SubscriptionConfig, type SubmittedItem } from "@ws/shared";
 import { settings } from "../src/settings.js";
-import { crawl, type PageInfo } from "../src/crawl.js";
+import { crawl, type CrawlSink, type PageInfo } from "../src/crawl.js";
 import { parseFeed } from "../src/feed.js";
 import { closeBrowser } from "../src/browser.js";
 import { ImageEnricher, parseOgImage, TRIAL_LIMIT } from "../src/images.js";
@@ -127,7 +127,12 @@ describe("feed", () => {
     const c = parseConfig({ schema_version: 1, source: { url: `${base}/rss.xml`, kind: "feed" }, fetch: { method: "http" }, identity: { method: "source_id" }, politeness: { min_interval_ms: 0 } });
     if (!c.ok) throw new Error(c.errors.join());
     let logo: unknown = "unset";
-    const sink = { page: async (p: { channel: { data: { logo?: unknown } } | null }) => void (logo = p.channel?.data.logo), artifact: async () => null };
+    const sink: CrawlSink = {
+      page: async (p) => {
+        logo = p.channel?.data.logo;
+      },
+      artifact: async () => null,
+    };
     await crawl(c.config, sink);
     expect(logo).toBeUndefined();
     await setState({ ogImage: true });
