@@ -19,6 +19,7 @@ import type { ListSnapshot, PageExtraction } from "@ws/shared/dom";
 import { openPage, ws, type OpenedPage } from "./browser.js";
 import { checkRobots, httpGet, FetchError, BlockedHostError } from "./net.js";
 import { parseFeed, looksLikeFeed } from "./feed.js";
+import { settings } from "./settings.js";
 import { fetchOgImage, type ImageEnricher } from "./images.js";
 
 export type PageInfo = PageSubmission["page"];
@@ -94,14 +95,14 @@ async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
   const fetchedAt = now();
   let res;
   try {
-    res = await httpGet(url, { headers: cfg.fetch.headers, timeoutMs: cfg.fetch.timeout_ms, minIntervalMs: cfg.politeness.min_interval_ms });
+    res = await httpGet(url, { headers: cfg.fetch.headers, timeoutMs: cfg.fetch.timeout_ms, minIntervalMs: cfg.politeness.min_interval_ms, cacheTtlMs: settings.httpCacheSourceTtlMs });
   } catch (e) {
     const msg = (e as Error).message;
     await sink.page({ page: { seq: 0, kind: "initial", url, fetched_at: fetchedAt, http_status: null, http_status_source: "none", action_result: null, extract_status: "skipped", item_count: 0, error: msg }, channel: null, items: [] });
     return { ...base, traversal: "incomplete", end_reason: "error", error_stage: "fetch", error_detail: msg, retryable: e instanceof FetchError ? e.retryable : !(e instanceof BlockedHostError) };
   }
   const snapshot = await sink.artifact("page-0.xml.gz", gzipSync(res.body), "application/gzip").catch(() => null);
-  const pageBase: PageInfo = { seq: 0, kind: "initial", url: res.url, fetched_at: fetchedAt, http_status: res.status, http_status_source: "main_document", action_result: null, extract_status: "skipped", item_count: 0, snapshot_key: snapshot };
+  const pageBase: PageInfo = { seq: 0, kind: "initial", url: res.url, fetched_at: fetchedAt, http_status: res.status, http_status_source: "main_document", action_result: null, extract_status: "skipped", item_count: 0, snapshot_key: snapshot, ...(res.cacheAgeMs !== undefined ? { timings: { cache_age_ms: res.cacheAgeMs } } : {}) };
   if (res.status < 200 || res.status >= 300) {
     await sink.page({ page: { ...pageBase, error: `http_status_${res.status}` }, channel: null, items: [] });
     return { ...base, pages_fetched: 1, traversal: "incomplete", end_reason: "error", error_stage: "fetch", error_detail: `HTTP ${res.status}`, retryable: res.status >= 500 || res.status === 429 || res.status === 408 };
@@ -170,6 +171,7 @@ async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
   let position = 0;
   let anyExtractFailed = false;
   let extractedPages = 0;
+  let cacheAgeMs: number | undefined;
 
   const fail = (stage: ErrorStage, detail: string, retryable = false, end: EndReason = "error"): CrawlOutcome => ({
     ...base,
@@ -189,13 +191,14 @@ async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
     if (cfg.fetch.method === "http") {
       let res;
       try {
-        res = await httpGet(url, { headers: cfg.fetch.headers, timeoutMs: cfg.fetch.timeout_ms, minIntervalMs: cfg.politeness.min_interval_ms });
+        res = await httpGet(url, { headers: cfg.fetch.headers, timeoutMs: cfg.fetch.timeout_ms, minIntervalMs: cfg.politeness.min_interval_ms, cacheTtlMs: settings.httpCacheSourceTtlMs });
       } catch (e) {
         const msg = (e as Error).message;
         await sink.page({ page: { seq: 0, kind: "initial", url, fetched_at: fetchedAt, http_status: null, http_status_source: "none", action_result: null, extract_status: "skipped", item_count: 0, error: msg }, channel: null, items: [] });
         return fail("fetch", msg, e instanceof FetchError ? e.retryable : false);
       }
       pagesFetched = 1;
+      cacheAgeMs = res.cacheAgeMs;
       if (res.status < 200 || res.status >= 300) {
         await sink.page({ page: { seq: 0, kind: "initial", url: res.url, fetched_at: fetchedAt, http_status: res.status, http_status_source: "main_document", action_result: null, extract_status: "skipped", item_count: 0, error: `http_status_${res.status}` }, channel: null, items: [] });
         return fail("fetch", `HTTP ${res.status}`, res.status >= 500 || res.status === 429 || res.status === 408);
@@ -275,7 +278,7 @@ async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
           error: ex.status === "failed" ? ex.reason ?? "extract_failed" : null,
           subresource_failures: opened.subresourceFailures(),
           snapshot_key: snap,
-          timings: { wait_ms: waitResult.ms },
+          timings: { wait_ms: waitResult.ms, ...(seq === 0 && cacheAgeMs !== undefined ? { cache_age_ms: cacheAgeMs } : {}) },
         },
         channel,
         items: submitted,

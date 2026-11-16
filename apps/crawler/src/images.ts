@@ -1,6 +1,7 @@
 // item のリンク先から og:image を取得する（配信元データに画像がない item のみ）
 import { itemImageFromData, primaryLink, type ItemImagesInstruction, type SubmittedItem } from "@ws/shared";
 import { checkRobots, httpGet, FetchError } from "./net.js";
+import { settings } from "./settings.js";
 
 /** 試行モードで「見つからない」と判断するまでの件数 */
 export const TRIAL_LIMIT = 3;
@@ -39,7 +40,7 @@ function decodeEntities(s: string): string {
 export async function fetchOgImage(link: string, opts: { minIntervalMs: number; timeoutMs?: number; respectRobots: boolean }): Promise<string | null | undefined> {
   try {
     if (opts.respectRobots && !(await checkRobots(link)).allowed) return null;
-    const res = await httpGet(link, { timeoutMs: opts.timeoutMs ?? 15000, minIntervalMs: opts.minIntervalMs });
+    const res = await httpGet(link, { timeoutMs: opts.timeoutMs ?? 15000, minIntervalMs: opts.minIntervalMs, cacheTtlMs: settings.httpCacheLinkTtlMs });
     if (res.status >= 500 || res.status === 429 || res.status === 408) return undefined;
     if (res.status < 200 || res.status >= 300) return null;
     if (!/html/i.test(res.headers["content-type"] ?? "text/html")) return null;

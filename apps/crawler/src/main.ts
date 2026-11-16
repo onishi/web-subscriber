@@ -6,6 +6,7 @@ import { crawl } from "./crawl.js";
 import { ImageEnricher } from "./images.js";
 import { runProbe } from "./probe.js";
 import { engineVersion, closeBrowser } from "./browser.js";
+import { pruneHttpCache } from "./net.js";
 
 let running = 0;
 let stopping = false;
@@ -97,10 +98,16 @@ async function runJob(job: LeasedJob) {
 }
 
 async function loop() {
-  log(`crawler ${CRAWLER_VERSION} worker=${settings.workerId} api=${settings.apiBase}`);
+  log(`crawler ${CRAWLER_VERSION} worker=${settings.workerId} api=${settings.apiBase} http_cache=${settings.httpCache ? `source ${settings.httpCacheSourceTtlMs / 60000}m / link ${settings.httpCacheLinkTtlMs / 3600000}h` : "off"}`);
+  let lastPrune = 0;
   while (!stopping) {
     try {
       if (outboxSize() > 0) await flushOutbox();
+      if (Date.now() - lastPrune > 3600_000) {
+        lastPrune = Date.now();
+        const n = pruneHttpCache();
+        if (n) log(`http cache: pruned ${n}`);
+      }
       const free = settings.concurrency - running;
       if (free > 0) {
         const jobs = await lease(free);

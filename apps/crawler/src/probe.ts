@@ -1,4 +1,5 @@
 // AI初期設定・プレビュー用のプローブ（通常クロールと同じ取得機構を使う）
+import { settings } from "./settings.js";
 import type { ProbeRequest, SubscriptionConfig, SubmittedItem } from "@ws/shared";
 import { parseConfig } from "@ws/shared";
 import type { Outline } from "@ws/shared/dom";
@@ -24,7 +25,7 @@ function minimalConfig(url: string, method: "http" | "browser"): SubscriptionCon
 
 async function feedSummary(url: string) {
   try {
-    const r = await httpGet(url, { timeoutMs: 15000, minIntervalMs: 1000 });
+    const r = await httpGet(url, { timeoutMs: 15000, minIntervalMs: 1000 , cacheTtlMs: settings.httpCacheSourceTtlMs });
     if (r.status !== 200 || !looksLikeFeed(r.headers["content-type"] ?? null, r.body)) return { url, ok: false, status: r.status, reason: "not_feed" };
     const f = parseFeed(r.body, r.url);
     return {
@@ -52,7 +53,7 @@ async function discover(url: string, artifact: Artifact) {
   // HTTP
   let httpRes;
   try {
-    httpRes = await httpGet(url, { timeoutMs: 30000, minIntervalMs: 1000 });
+    httpRes = await httpGet(url, { timeoutMs: 30000, minIntervalMs: 1000 , cacheTtlMs: settings.httpCacheSourceTtlMs });
     out.http = { status: httpRes.status, final_url: httpRes.url, content_type: httpRes.headers["content-type"], bytes: httpRes.body.length, redirects: httpRes.redirects };
   } catch (e) {
     out.http = { error: (e as Error).message };
@@ -191,7 +192,7 @@ function fieldFill(items: SubmittedItem[]) {
 async function inspect(req: Extract<ProbeRequest, { kind: "inspect" }>) {
   const cfg = minimalConfig(req.url, req.method);
   if (req.method === "http") {
-    const r = await httpGet(req.url, { timeoutMs: 30000, minIntervalMs: 1000 });
+    const r = await httpGet(req.url, { timeoutMs: 30000, minIntervalMs: 1000 , cacheTtlMs: settings.httpCacheSourceTtlMs });
     const op = await openPage(cfg, "static", { url: r.url, status: r.status, body: r.body, headers: r.headers });
     try {
       await op.page.goto(r.url, { waitUntil: "domcontentloaded" });

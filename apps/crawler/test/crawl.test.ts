@@ -9,13 +9,18 @@ import { crawl, type CrawlSink, type PageInfo } from "../src/crawl.js";
 import { parseFeed } from "../src/feed.js";
 import { closeBrowser } from "../src/browser.js";
 import { ImageEnricher, parseOgImage, TRIAL_LIMIT } from "../src/images.js";
-import { parseRobots, robotsAllows, httpGet } from "../src/net.js";
+import { parseRobots, robotsAllows, httpGet, pruneHttpCache } from "../src/net.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let server: Server;
 let base = "";
 
 beforeAll(async () => {
   settings.allowPrivateHosts = true;
+  // フィクスチャの状態を切り替えて検証するため、キャッシュ自体のテスト以外では無効にする
+  settings.httpCache = false;
   server = createFixtureServer();
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -306,5 +311,34 @@ describe("item images (og:image)", () => {
     expect(r.items.filter((i) => skip.includes(i.identity_key!)).every((i) => !i.image_lookup)).toBe(true);
     expect(images.stats().tried).toBe(r.items.length - 2);
     await setState({});
+  });
+});
+
+describe("http cache", () => {
+  it("returns cached 2xx within TTL, skips 5xx, and prunes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ws-cache-"));
+    const prev = { ...settings };
+    Object.assign(settings, { httpCache: true, dataDir: dir, httpCacheSourceTtlMs: 60_000, httpCacheLinkTtlMs: 60_000 });
+    try {
+      await setState({ itemsVersion: 1 });
+      const a = await httpGet(`${base}/static/list`, { timeoutMs: 5000, cacheTtlMs: 60_000 });
+      expect(a.cacheAgeMs).toBeUndefined();
+      await setState({ itemsVersion: 2 });
+      const b = await httpGet(`${base}/static/list`, { timeoutMs: 5000, cacheTtlMs: 60_000 });
+      expect(b.cacheAgeMs).toBeGreaterThanOrEqual(0);
+      expect(b.body).toBe(a.body);
+      const c = await httpGet(`${base}/static/list`, { timeoutMs: 5000 });
+      expect(c.cacheAgeMs).toBeUndefined();
+      expect(c.body).not.toBe(a.body);
+      await httpGet(`${base}/error/500`, { timeoutMs: 5000, cacheTtlMs: 60_000 });
+      expect((await httpGet(`${base}/error/500`, { timeoutMs: 5000, cacheTtlMs: 60_000 })).cacheAgeMs).toBeUndefined();
+      Object.assign(settings, { httpCacheSourceTtlMs: 0, httpCacheLinkTtlMs: 0 });
+      await new Promise((r) => setTimeout(r, 5));
+      expect(pruneHttpCache()).toBe(1);
+    } finally {
+      Object.assign(settings, prev);
+      rmSync(dir, { recursive: true, force: true });
+      await setState({});
+    }
   });
 });

@@ -1,5 +1,8 @@
 // HTTP取得・User-Agent・robots.txt・SSRF対策
 import { lookup } from "node:dns/promises";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, renameSync } from "node:fs";
+import { join } from "node:path";
 import { isIP } from "node:net";
 import { CRAWLER_VERSION, USER_AGENT_PRODUCT } from "@ws/shared";
 import { settings } from "./settings.js";
@@ -53,6 +56,8 @@ export interface HttpResult {
   headers: Record<string, string>;
   body: string;
   redirects: string[];
+  /** キャッシュから返したときの経過時間 */
+  cacheAgeMs?: number;
 }
 
 export class FetchError extends Error {
@@ -66,7 +71,72 @@ export class FetchError extends Error {
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
-export async function httpGet(url: string, opts: { headers?: Record<string, string>; timeoutMs: number; minIntervalMs?: number }): Promise<HttpResult> {
+// ---- HTTP 応答のディスクキャッシュ ----
+// テストや手動実行で同じURLを短時間に何度も取りに行かないため。2xx と 404/410 だけ保存し、5xx・429・通信エラーは保存しない。
+const cacheDir = () => join(settings.dataDir, "http-cache");
+const cacheKey = (url: string, headers?: Record<string, string>) =>
+  createHash("sha256").update(JSON.stringify([url, Object.entries(headers ?? {}).sort()])).digest("hex");
+
+function readCache(key: string, ttlMs: number): HttpResult | null {
+  try {
+    const p = join(cacheDir(), `${key}.json`);
+    const age = Date.now() - statSync(p).mtimeMs;
+    if (age > ttlMs) return null;
+    return { ...(JSON.parse(readFileSync(p, "utf8")) as HttpResult), cacheAgeMs: Math.round(age) };
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(key: string, r: HttpResult) {
+  try {
+    mkdirSync(cacheDir(), { recursive: true });
+    const p = join(cacheDir(), `${key}.json`);
+    writeFileSync(`${p}.tmp`, JSON.stringify(r));
+    renameSync(`${p}.tmp`, p);
+  } catch {
+    /* キャッシュは失敗しても取得結果には影響させない */
+  }
+}
+
+/** 最長の保持期間を過ぎたキャッシュを削除 */
+export function pruneHttpCache(): number {
+  const maxAge = Math.max(settings.httpCacheSourceTtlMs, settings.httpCacheLinkTtlMs);
+  let n = 0;
+  try {
+    for (const f of readdirSync(cacheDir())) {
+      const p = join(cacheDir(), f);
+      try {
+        if (Date.now() - statSync(p).mtimeMs > maxAge) {
+          rmSync(p, { force: true });
+          n++;
+        }
+      } catch {
+        /* 並行削除など */
+      }
+    }
+  } catch {
+    /* ディレクトリ未作成 */
+  }
+  return n;
+}
+
+export async function httpGet(
+  url: string,
+  opts: { headers?: Record<string, string>; timeoutMs: number; minIntervalMs?: number; cacheTtlMs?: number },
+): Promise<HttpResult> {
+  const useCache = settings.httpCache && !!opts.cacheTtlMs && opts.cacheTtlMs > 0;
+  const key = useCache ? cacheKey(url, opts.headers) : "";
+  if (useCache) {
+    const hit = readCache(key, opts.cacheTtlMs!);
+    if (hit) return hit;
+  }
+  const r = await httpGetNetwork(url, opts);
+  if (useCache && ((r.status >= 200 && r.status < 300) || r.status === 404 || r.status === 410)) writeCache(key, r);
+  return r;
+}
+
+async function httpGetNetwork(url: string, opts: { headers?: Record<string, string>; timeoutMs: number; minIntervalMs?: number }): Promise<HttpResult> {
   const redirects: string[] = [];
   let cur = url;
   for (let i = 0; i < 10; i++) {
@@ -190,7 +260,7 @@ export async function checkRobots(url: string): Promise<{ allowed: boolean; deta
   if (!entry || Date.now() - entry.fetchedAt > 24 * 3600_000) {
     let rules: { allow: boolean; path: string }[] = [];
     try {
-      const r = await httpGet(`${u.origin}/robots.txt`, { timeoutMs: 10000 });
+      const r = await httpGet(`${u.origin}/robots.txt`, { timeoutMs: 10000, cacheTtlMs: settings.httpCacheLinkTtlMs });
       if (r.status >= 200 && r.status < 300) rules = parseRobots(r.body, USER_AGENT_PRODUCT);
       // 4xx は制限なし。5xx は慎重に全拒否（RFC 9309）
       else if (r.status >= 500) rules = [{ allow: false, path: "/" }];
