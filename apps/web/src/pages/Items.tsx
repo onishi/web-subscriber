@@ -22,6 +22,8 @@ interface ItemRow {
   updated_mark: boolean;
   /** セット表示時のカスタムフィールドの値 */
   fields?: Record<string, (string | number | boolean | null)[]>;
+  /** 手で直したフィールドのキー */
+  fields_manual?: string[];
 }
 
 export interface FieldDef {
@@ -122,8 +124,9 @@ export function ItemList({
                   {fields
                     .filter((f) => it.fields![f.key]?.length)
                     .map((f) => (
-                      <span key={f.key} className="field-value">
+                      <span key={f.key} className="field-value" title={it.fields_manual?.includes(f.key) ? "手で修正した値" : "AIが抽出した値"}>
                         <span className="muted">{f.label}</span> {it.fields![f.key].map((v) => fmtFieldValue(f.type, v)).join("・")}
+                        {it.fields_manual?.includes(f.key) && <span className="manual-mark">✎</span>}
                       </span>
                     ))}
                 </div>
@@ -175,7 +178,7 @@ function sanitize(html: string): string {
 }
 
 function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
-  const { data } = useApi<any>(`/items/${id}`);
+  const { data, reload } = useApi<any>(`/items/${id}`);
   if (!data) return <div className="panel muted">読み込み中…</div>;
   const d = data.data;
   const alt = d.links.filter((l: any) => l.rel === "alternate");
@@ -192,15 +195,8 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
         <span className="spacer" />
         <button onClick={onUnread}>未読に戻す</button>
       </div>
+      {data.custom_fields?.length > 0 && <CustomFieldsEditor itemId={id} fields={data.custom_fields} reload={reload} />}
       <div className="kv small" style={{ margin: "10px 0" }}>
-        {data.custom_fields?.map((f: any) => (
-          <div key={`${f.set_id}:${f.key}`} style={{ display: "contents" }}>
-            <div>
-              {f.label} <span className="muted">（{f.set_name}）</span>
-            </div>
-            <div>{f.values.map((v: unknown) => fmtFieldValue(f.type, v)).join("・")}</div>
-          </div>
-        ))}
         {data.detail_checked_at && (
           <>
             <div>リンク先</div>
@@ -299,6 +295,126 @@ export function ItemsPage() {
       <h2>新着</h2>
       <p className="muted small">初回取得分（基準データ）は既読として表示します。内容が更新された item には「更新」印が付きます。</p>
       <ItemList />
+    </div>
+  );
+}
+
+const fmtValues = (type: string, vals: unknown[]) => (vals.length ? vals.map((v) => fmtFieldValue(type, v)).join("・") : "—");
+
+/** item のカスタムフィールド：表示・手動修正・AIの値に戻す・修正履歴 */
+function CustomFieldsEditor({ itemId, fields, reload }: { itemId: string; fields: any[]; reload: () => Promise<unknown> }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string>("");
+  const [err, setErr] = useState<string | null>(null);
+  const keyOf = (f: any) => `${f.set_id}:${f.key}`;
+  const toDraft = (f: any) => (f.type === "list" ? f.values.join("\n") : f.values[0] === undefined || f.values[0] === null ? "" : String(f.values[0]));
+  const fromDraft = (f: any): unknown[] => {
+    if (f.type === "list") return draft.split(/\n|、|,/).map((x) => x.trim()).filter(Boolean);
+    if (draft.trim() === "") return [];
+    if (f.type === "number") return [Number(draft)];
+    if (f.type === "boolean") return [draft === "true"];
+    return [draft.trim()];
+  };
+  const sets = [...new Map(fields.map((f) => [f.set_id, f.set_name])).entries()];
+  return (
+    <div className="custom-fields">
+      {sets.map(([setId, setName]) => (
+        <div key={setId}>
+          <div className="small muted">カスタムフィールド（{setName}）</div>
+          <table className="small">
+            <tbody>
+              {fields
+                .filter((f) => f.set_id === setId)
+                .map((f) => (
+                  <tr key={keyOf(f)}>
+                    <td style={{ width: 120 }}>{f.label}</td>
+                    <td>
+                      {editing === keyOf(f) ? (
+                        <form
+                          className="row"
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            try {
+                              await api(`/items/${itemId}/fields/${f.set_id}/${f.key}`, { method: "PUT", json: { values: fromDraft(f) } });
+                              setEditing(null);
+                              setErr(null);
+                              void reload();
+                            } catch (e) {
+                              setErr((e as Error).message);
+                            }
+                          }}
+                        >
+                          {f.type === "list" ? (
+                            <textarea rows={3} value={draft} placeholder="1行に1つ" onChange={(e) => setDraft(e.target.value)} />
+                          ) : f.type === "boolean" ? (
+                            <select value={draft} onChange={(e) => setDraft(e.target.value)}>
+                              <option value="">値なし</option>
+                              <option value="true">はい</option>
+                              <option value="false">いいえ</option>
+                            </select>
+                          ) : (
+                            <input type={f.type === "date" ? "text" : f.type === "number" ? "number" : "text"} placeholder={f.type === "date" ? "YYYY-MM-DD（空欄で値なし）" : "空欄で値なし"} value={draft} onChange={(e) => setDraft(e.target.value)} />
+                          )}
+                          <button className="primary">保存</button>
+                          <button type="button" onClick={() => setEditing(null)}>
+                            取消
+                          </button>
+                          {err && <span className="error">{err}</span>}
+                        </form>
+                      ) : (
+                        <div className="row">
+                          <span>{fmtValues(f.type, f.values)}</span>
+                          {f.manual ? (
+                            <span className="badge warn" title={`${f.manual.by}・${fmtTime(f.manual.at)}`}>
+                              手動
+                            </span>
+                          ) : f.extraction.status === "ok" ? (
+                            <span className="badge">AI</span>
+                          ) : (
+                            <span className="badge">{f.extraction.status === "error" ? "抽出失敗" : "抽出待ち"}</span>
+                          )}
+                          <button
+                            onClick={() => {
+                              setDraft(toDraft(f));
+                              setErr(null);
+                              setEditing(keyOf(f));
+                            }}
+                          >
+                            修正
+                          </button>
+                          {f.manual && (
+                            <button
+                              title="手動の値をやめて、AIで抽出し直します"
+                              onClick={async () => {
+                                await api(`/items/${itemId}/fields/${f.set_id}/${f.key}`, { method: "DELETE" });
+                                setTimeout(() => void reload(), 8000);
+                                void reload();
+                              }}
+                            >
+                              AIの値に戻す
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {f.history.length > 0 && (
+                        <details>
+                          <summary className="muted">修正履歴（{f.history.length}）</summary>
+                          <ul className="muted">
+                            {f.history.map((h: any, i: number) => (
+                              <li key={i}>
+                                {fmtTime(h.at)} {h.by}：{h.action === "set" ? `${fmtValues(f.type, h.before)} → ${fmtValues(f.type, h.after)}` : `AIの値に戻す（直前の値 ${fmtValues(f.type, h.before)}）`}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
     </div>
   );
 }

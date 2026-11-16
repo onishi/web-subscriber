@@ -140,7 +140,7 @@ export function SetPage() {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"items" | "members" | "fields">("items");
+  const [tab, setTab] = useState<"items" | "members" | "fields" | "publish">("items");
   const [params, setParams] = useState<Record<string, string>>({});
   if (error) return <p className="error">{error === "not_found" ? "セットが見つかりません" : error}</p>;
   if (!data) return <p className="muted">読み込み中…</p>;
@@ -225,7 +225,11 @@ export function SetPage() {
         <button className={tab === "fields" ? "on" : ""} onClick={() => setTab("fields")}>
           カスタムフィールド（{data.fields.length}）
         </button>
+        <button className={tab === "publish" ? "on" : ""} onClick={() => setTab("publish")}>
+          公開{set.is_public ? "中" : ""}
+        </button>
       </div>
+      {tab === "publish" && <PublishEditor set={set} fields={data.fields} reload={reload} />}
       {tab === "fields" && <FieldsEditor setId={set.id} fields={data.fields} extraction={data.extraction} reload={reload} />}
       {tab === "items" &&
         (data.members.length ? (
@@ -586,5 +590,147 @@ function ListValueSelect({ setId, field, value, onChange }: { setId: string; fie
         </option>
       ))}
     </select>
+  );
+}
+
+const PUBLISH_ERROR: Record<string, string> = {
+  slug_required: "公開するには URL（スラッグ）が必要です",
+  bad_slug: "URL は英小文字・数字・ハイフン（先頭と末尾は英数字）で指定してください",
+  slug_taken: "この URL は別のセットで使われています",
+};
+
+/** セットの公開ページ（/p/<slug>）の設定 */
+function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; reload: () => Promise<unknown> }) {
+  const opts = (() => {
+    try {
+      return JSON.parse(set.public_options_json ?? "{}");
+    } catch {
+      return {};
+    }
+  })();
+  const dates = fields.filter((f) => f.type === "date");
+  const facets = fields.filter((f) => f.type === "list" || f.type === "text");
+  const [form, setForm] = useState({
+    is_public: !!set.is_public,
+    slug: set.public_slug ?? "",
+    title: set.public_title ?? "",
+    description: set.public_description ?? "",
+    fields: (opts.fields ?? []) as string[],
+    periodStart: opts.period?.start ?? "",
+    periodEnd: opts.period?.end ?? "",
+    facet: opts.facet ?? "",
+  });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const url = set.public_slug ? `${location.origin}/p/${set.public_slug}` : null;
+  return (
+    <form
+      className="panel publish-form"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        try {
+          await api(`/sets/${set.id}/publish`, {
+            method: "PUT",
+            json: {
+              is_public: form.is_public,
+              slug: form.slug,
+              title: form.title,
+              description: form.description,
+              options: { fields: form.fields, period: form.periodStart && form.periodEnd ? { start: form.periodStart, end: form.periodEnd } : null, facet: form.facet || null },
+            },
+          });
+          setErr(null);
+          setMsg("保存しました");
+          void reload();
+        } catch (e) {
+          setMsg(null);
+          setErr(PUBLISH_ERROR[(e as Error).message] ?? (e as Error).message);
+        }
+      }}
+    >
+      <p className="small muted" style={{ marginTop: 0 }}>
+        このセットの新着情報を、ログインなしで見られるページとして公開します。表示するのは各情報のタイトル・日付・概要の抜粋・画像・カスタムフィールドで、本文は元のサイトへのリンクで案内します。
+      </p>
+      <label className="row">
+        <input type="checkbox" checked={form.is_public} onChange={(e) => setForm({ ...form, is_public: e.target.checked })} /> 公開する
+      </label>
+      <div className="kv small">
+        <div>URL</div>
+        <div className="row">
+          <span className="mono muted">{location.origin}/p/</span>
+          <input type="text" className="mono" placeholder="kyoto-museums" value={form.slug} maxLength={64} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
+        </div>
+        <div>ページのタイトル</div>
+        <input type="text" placeholder={set.name} value={form.title} maxLength={80} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+        <div>説明</div>
+        <textarea rows={2} placeholder="例：京都の美術館・博物館の展覧会情報をまとめています。" value={form.description} maxLength={400} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        <div>表示するフィールド</div>
+        <div className="row" style={{ flexWrap: "wrap" }}>
+          {fields.length === 0 && <span className="muted">カスタムフィールドはありません</span>}
+          {fields.map((f) => (
+            <label key={f.key} className="row">
+              <input
+                type="checkbox"
+                checked={form.fields.includes(f.key)}
+                onChange={(e) => setForm({ ...form, fields: e.target.checked ? [...form.fields, f.key] : form.fields.filter((k) => k !== f.key) })}
+              />
+              {f.label}
+            </label>
+          ))}
+        </div>
+        <div>期間</div>
+        <div className="row">
+          {dates.length >= 2 ? (
+            <>
+              <select value={form.periodStart} onChange={(e) => setForm({ ...form, periodStart: e.target.value })}>
+                <option value="">使わない</option>
+                {dates.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    開始：{f.label}
+                  </option>
+                ))}
+              </select>
+              <select value={form.periodEnd} onChange={(e) => setForm({ ...form, periodEnd: e.target.value })}>
+                <option value="">使わない</option>
+                {dates.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    終了：{f.label}
+                  </option>
+                ))}
+              </select>
+              <span className="muted">「開催中 / これから / すべて」のタブを表示します</span>
+            </>
+          ) : (
+            <span className="muted">日付のフィールドが2つ（開始・終了）あると設定できます</span>
+          )}
+        </div>
+        <div>絞り込み</div>
+        <div className="row">
+          <select value={form.facet} onChange={(e) => setForm({ ...form, facet: e.target.value })}>
+            <option value="">使わない</option>
+            {facets.map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+          <span className="muted">値ごとのボタンで絞り込めます（例：動物）</span>
+        </div>
+      </div>
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="primary">保存</button>
+        {msg && <span className="small">{msg}</span>}
+        {err && <span className="error small">{err}</span>}
+        <span className="spacer" />
+        {url && set.is_public ? (
+          <a href={url} target="_blank" rel="noopener noreferrer">
+            公開ページを開く ↗
+          </a>
+        ) : null}
+      </div>
+      <p className="small muted">
+        公開ページは Cloudflare Access の保護対象外にする必要があります（Zero Trust のアプリケーションで、パス <span className="mono">p</span> を Bypass に設定）。
+      </p>
+    </form>
   );
 }

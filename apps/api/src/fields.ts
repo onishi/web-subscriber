@@ -1,7 +1,7 @@
 // セットのカスタムフィールド：定義・生成AIによる抽出・検索条件
 import { GoogleGenAI } from "@google/genai";
 import { mergeDetail, schemeHash, type ItemData } from "@ws/shared";
-import { type Env, nowIso, json } from "./env.js";
+import { type Env, newId, nowIso, json } from "./env.js";
 
 export const FIELD_TYPES = ["text", "list", "date", "number", "boolean"] as const;
 export type FieldType = (typeof FIELD_TYPES)[number];
@@ -204,18 +204,18 @@ async function extractBatch(env: Env, fields: SetField[], items: { id: string; t
 }
 
 /** 未抽出（またはフィールド定義が変わった）item を少しずつ抽出する。Cron と「今すぐ抽出」から呼ぶ */
-export async function processFieldExtractions(env: Env, opts: { limit?: number; setId?: string } = {}): Promise<{ processed: number; errors: number }> {
+export async function processFieldExtractions(env: Env, opts: { limit?: number; setId?: string; itemId?: string } = {}): Promise<{ processed: number; errors: number }> {
   if (!env.GEMINI_API_KEY) return { processed: 0, errors: 0 };
   const retryBefore = new Date(Date.now() - RETRY_AFTER_MIN * 60000).toISOString();
   const pending = await env.DB.prepare(
     `SELECT i.id, i.data_json, i.detail_json, m.set_id, st.fields_hash
      FROM sets st JOIN set_members m ON m.set_id = st.id JOIN items i ON i.subscription_id = m.subscription_id
      LEFT JOIN item_field_extractions e ON e.item_id = i.id AND e.set_id = st.id
-     WHERE st.fields_hash IS NOT NULL ${opts.setId ? "AND st.id = ?" : ""}
+     WHERE st.fields_hash IS NOT NULL ${opts.setId ? "AND st.id = ?" : ""} ${opts.itemId ? "AND i.id = ?" : ""}
        AND (e.item_id IS NULL OR e.schema_hash != st.fields_hash OR (e.status = 'error' AND e.attempts < ${MAX_ATTEMPTS} AND e.updated_at < ?))
      ORDER BY st.id, i.first_seen_at DESC LIMIT ?`,
   )
-    .bind(...(opts.setId ? [opts.setId] : []), retryBefore, opts.limit ?? 24)
+    .bind(...(opts.setId ? [opts.setId] : []), ...(opts.itemId ? [opts.itemId] : []), retryBefore, opts.limit ?? 24)
     .all<{ id: string; data_json: string; detail_json: string | null; set_id: string; fields_hash: string }>();
   let processed = 0;
   let errors = 0;
@@ -225,6 +225,15 @@ export async function processFieldExtractions(env: Env, opts: { limit?: number; 
     const fields = await loadFields(env, setId);
     if (!fields.length) continue;
     const hash = rows[0].fields_hash;
+    // 手で直したフィールドは AI の結果で上書きしない
+    const locks = new Set<string>();
+    for (let i = 0; i < rows.length; i += 50) {
+      const ids = rows.slice(i, i + 50).map((r) => r.id);
+      const rs = await env.DB.prepare(`SELECT item_id, field_id FROM item_field_locks WHERE set_id = ? AND item_id IN (${ids.map(() => "?").join(",")})`)
+        .bind(setId, ...ids)
+        .all<{ item_id: string; field_id: string }>();
+      for (const l of rs.results) locks.add(`${l.item_id}:${l.field_id}`);
+    }
     for (let i = 0; i < rows.length; i += BATCH) {
       const chunk = rows.slice(i, i + BATCH);
       const now = nowIso();
@@ -263,8 +272,16 @@ export async function processFieldExtractions(env: Env, opts: { limit?: number; 
         }
         processed++;
         // 値は取り直した結果で置き換える
-        stmts.push(env.DB.prepare("DELETE FROM item_field_values WHERE item_id = ? AND set_id = ?").bind(row.id, setId));
+        stmts.push(
+          env.DB.prepare("DELETE FROM item_field_values WHERE item_id = ? AND set_id = ? AND field_id NOT IN (SELECT field_id FROM item_field_locks WHERE item_id = ? AND set_id = ?)").bind(
+            row.id,
+            setId,
+            row.id,
+            setId,
+          ),
+        );
         for (const f of fields) {
+          if (locks.has(`${row.id}:${f.id}`)) continue;
           normalizeValue(f.type, vals[f.key]).forEach((v, ord) =>
             stmts.push(
               env.DB.prepare("INSERT INTO item_field_values (item_id, field_id, set_id, ord, value_text, value_num, value_date) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(
@@ -356,4 +373,73 @@ export function buildFieldQuery(fields: SetField[], params: URLSearchParams): Fi
     orderArgs.push(f.id, f.id);
   }
   return { where, args, order, orderArgs };
+}
+
+// ---- 手動修正 ----
+
+export async function currentValues(env: Env, itemId: string, field: SetField): Promise<unknown[]> {
+  const rs = await env.DB.prepare("SELECT value_text, value_num, value_date FROM item_field_values WHERE item_id = ? AND field_id = ? ORDER BY ord")
+    .bind(itemId, field.id)
+    .all<{ value_text: string | null; value_num: number | null; value_date: string | null }>();
+  return rs.results.map((r) => displayValue(field.type, r));
+}
+
+/** 手で値を設定する（空配列なら「値なし」）。ロックを付け、履歴を残す */
+export async function setManualValues(env: Env, itemId: string, field: SetField, input: unknown, userId: string): Promise<{ values: unknown[] } | { error: string }> {
+  const raw = field.type === "list" ? (Array.isArray(input) ? input : []) : Array.isArray(input) ? input[0] : input;
+  const vals = raw === null || raw === undefined || raw === "" ? [] : normalizeValue(field.type, raw);
+  if (raw !== null && raw !== undefined && raw !== "" && !(Array.isArray(raw) && raw.length === 0) && vals.length === 0) return { error: `bad_value:${field.type}` };
+  const before = await currentValues(env, itemId, field);
+  const now = nowIso();
+  const after = vals.map((v) => displayValue(field.type, { value_text: v.text ?? null, value_num: v.num ?? null, value_date: v.date ?? null }));
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM item_field_values WHERE item_id = ? AND field_id = ?").bind(itemId, field.id),
+    ...vals.map((v, ord) =>
+      env.DB.prepare("INSERT INTO item_field_values (item_id, field_id, set_id, ord, value_text, value_num, value_date) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(
+        itemId,
+        field.id,
+        field.set_id,
+        ord,
+        v.text ?? null,
+        v.num ?? null,
+        v.date ?? null,
+      ),
+    ),
+    env.DB.prepare(
+      "INSERT INTO item_field_locks (item_id, set_id, field_id, locked_by, locked_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(item_id, field_id) DO UPDATE SET locked_by = excluded.locked_by, locked_at = excluded.locked_at",
+    ).bind(itemId, field.set_id, field.id, userId, now),
+    env.DB.prepare("INSERT INTO item_field_edits (id, item_id, set_id, field_id, action, before_json, after_json, user_id, created_at) VALUES (?, ?, ?, ?, 'set', ?, ?, ?, ?)").bind(
+      newId(),
+      itemId,
+      field.set_id,
+      field.id,
+      JSON.stringify(before),
+      JSON.stringify(after),
+      userId,
+      now,
+    ),
+  ]);
+  return { values: after };
+}
+
+/** 手動の値をやめて AI の値に戻す（この item をこのセットで再抽出する） */
+export async function revertManualValues(env: Env, itemId: string, field: SetField, userId: string): Promise<boolean> {
+  const lock = await env.DB.prepare("SELECT 1 FROM item_field_locks WHERE item_id = ? AND field_id = ?").bind(itemId, field.id).first();
+  if (!lock) return false;
+  const before = await currentValues(env, itemId, field);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM item_field_locks WHERE item_id = ? AND field_id = ?").bind(itemId, field.id),
+    env.DB.prepare("DELETE FROM item_field_values WHERE item_id = ? AND field_id = ?").bind(itemId, field.id),
+    env.DB.prepare("DELETE FROM item_field_extractions WHERE item_id = ? AND set_id = ?").bind(itemId, field.set_id),
+    env.DB.prepare("INSERT INTO item_field_edits (id, item_id, set_id, field_id, action, before_json, after_json, user_id, created_at) VALUES (?, ?, ?, ?, 'revert', ?, NULL, ?, ?)").bind(
+      newId(),
+      itemId,
+      field.set_id,
+      field.id,
+      JSON.stringify(before),
+      userId,
+      nowIso(),
+    ),
+  ]);
+  return true;
 }

@@ -7,6 +7,7 @@ import { tick } from "./jobs.js";
 import { finalizeExpiredRun } from "./ingest.js";
 import { completeHooks, markProbeFailed } from "./hooks.js";
 import { processFieldExtractions } from "./fields.js";
+import { publicPages } from "./public.js";
 
 export { SetupWorkflow } from "./ai/setup.js";
 
@@ -16,6 +17,8 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 app.use("/api/v1/*", userAuth);
 app.route("/api/v1", userApi);
 app.route("/worker/v1", workerApi);
+// セットの公開ページ（認証なし。Cloudflare Access では /p をバイパスにする）
+app.route("/p", publicPages);
 
 /** 開発用：Cron を手動で起動（DEV_AUTH_BYPASS=1 のときのみ） */
 app.post("/api/dev/tick", async (c) => {

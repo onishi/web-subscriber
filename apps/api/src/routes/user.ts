@@ -5,7 +5,8 @@ import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt } from "../env
 import { type AppVars } from "../auth.js";
 import { enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
 import { startSession } from "../ai/setup.js";
-import { FIELD_KEY_RE, FIELD_TYPES, buildFieldQuery, displayValue, loadFields, processFieldExtractions, refreshFieldsHash, type FieldType } from "../fields.js";
+import { SLUG_RE, type PublicOptions } from "../public.js";
+import { FIELD_KEY_RE, FIELD_TYPES, buildFieldQuery, displayValue, loadFields, processFieldExtractions, refreshFieldsHash, setManualValues, revertManualValues, type FieldType, type SetField } from "../fields.js";
 
 export const userApi = new Hono<{ Bindings: Env; Variables: AppVars }>();
 
@@ -378,6 +379,14 @@ userApi.get("/items", async (c) => {
       .bind(setId, ...items.map((i) => i.id))
       .all<{ item_id: string; field_id: string; ord: number; value_text: string | null; value_num: number | null; value_date: string | null }>();
     const byId = new Map(fields.map((f) => [f.id, f]));
+    const locks = await c.env.DB.prepare(`SELECT item_id, field_id FROM item_field_locks WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")})`)
+      .bind(setId, ...items.map((i) => i.id))
+      .all<{ item_id: string; field_id: string }>();
+    const manual = new Map<string, string[]>();
+    for (const l of locks.results) {
+      const f = byId.get(l.field_id);
+      if (f) manual.set(l.item_id, [...(manual.get(l.item_id) ?? []), f.key]);
+    }
     const per = new Map<string, Record<string, unknown[]>>();
     for (const v of vals.results) {
       const f = byId.get(v.field_id);
@@ -386,7 +395,7 @@ userApi.get("/items", async (c) => {
       (m[f.key] ??= []).push(displayValue(f.type, v));
       per.set(v.item_id, m);
     }
-    return c.json({ items: items.map((i) => ({ ...i, fields: per.get(i.id as string) ?? {} })), has_more: rs.results.length > limit, next_offset: offset + limit });
+    return c.json({ items: items.map((i) => ({ ...i, fields: per.get(i.id as string) ?? {}, fields_manual: manual.get(i.id as string) ?? [] })), has_more: rs.results.length > limit, next_offset: offset + limit });
   }
   return c.json({ items, has_more: rs.results.length > limit, next_offset: offset + limit });
 });
@@ -412,18 +421,7 @@ userApi.get("/items/:id", async (c) => {
   };
   const revisions = await c.env.DB.prepare("SELECT id, run_id, change_kind, created_at, data_json FROM item_revisions WHERE item_id = ? ORDER BY created_at DESC LIMIT 20").bind(it.id).all<Record<string, string>>();
   const rs = await c.env.DB.prepare("SELECT read_at FROM reading_states WHERE user_id = ? AND item_id = ?").bind(uid, it.id).first<{ read_at: string }>();
-  const cf = await c.env.DB.prepare(
-    `SELECT st.id AS set_id, st.name AS set_name, f.key, f.label, f.type, v.value_text, v.value_num, v.value_date
-     FROM item_field_values v JOIN set_fields f ON f.id = v.field_id JOIN sets st ON st.id = v.set_id WHERE v.item_id = ? ORDER BY st.position, f.position, v.ord`,
-  )
-    .bind(it.id)
-    .all<{ set_id: string; set_name: string; key: string; label: string; type: FieldType; value_text: string | null; value_num: number | null; value_date: string | null }>();
-  const customFields: { set_id: string; set_name: string; key: string; label: string; type: string; values: unknown[] }[] = [];
-  for (const r of cf.results) {
-    let e = customFields.find((x) => x.set_id === r.set_id && x.key === r.key);
-    if (!e) customFields.push((e = { set_id: r.set_id, set_name: r.set_name, key: r.key, label: r.label, type: r.type, values: [] }));
-    e.values.push(displayValue(r.type, r));
-  }
+  const customFields = await itemCustomFields(c.env, it.id, it.subscription_id);
   const { data_json: _d, detail_json: _dj, ...meta } = it;
   return c.json({ ...meta, custom_fields: customFields, data, list_data: detailData ? listData : undefined, detail_data: detailData, effective, read_at: rs?.read_at ?? null, revisions: revisions.results.map((r) => ({ ...r, data: json(r.data_json, null), data_json: undefined })) });
 });
@@ -534,6 +532,7 @@ userApi.delete("/sets/:id", async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM item_field_values WHERE set_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM item_field_extractions WHERE set_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM item_field_locks WHERE set_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM set_fields WHERE set_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM sets WHERE id = ?").bind(id),
@@ -556,6 +555,7 @@ userApi.delete("/sets/:id/members/:subId", async (c) => {
     c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ? AND subscription_id = ?").bind(id, subId),
     c.env.DB.prepare(`DELETE FROM item_field_values WHERE set_id = ? AND item_id IN (${ofSub})`).bind(id, subId),
     c.env.DB.prepare(`DELETE FROM item_field_extractions WHERE set_id = ? AND item_id IN (${ofSub})`).bind(id, subId),
+    c.env.DB.prepare(`DELETE FROM item_field_locks WHERE set_id = ? AND item_id IN (${ofSub})`).bind(id, subId),
   ]);
   return c.json({ ok: true });
 });
@@ -617,7 +617,8 @@ userApi.patch("/sets/:id/fields/:fieldId", async (c) => {
     ),
   ];
   // 型が変わったら保存済みの値は使えない
-  if (f.type && f.type !== cur.type) stmts.push(c.env.DB.prepare("DELETE FROM item_field_values WHERE field_id = ?").bind(fieldId));
+  if (f.type && f.type !== cur.type)
+    stmts.push(c.env.DB.prepare("DELETE FROM item_field_values WHERE field_id = ?").bind(fieldId), c.env.DB.prepare("DELETE FROM item_field_locks WHERE field_id = ?").bind(fieldId));
   await c.env.DB.batch(stmts);
   await refreshFieldsHash(c.env, setId);
   return c.json({ ok: true });
@@ -627,6 +628,7 @@ userApi.delete("/sets/:id/fields/:fieldId", async (c) => {
   const { id: setId, fieldId } = c.req.param();
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM item_field_values WHERE field_id = ?").bind(fieldId),
+    c.env.DB.prepare("DELETE FROM item_field_locks WHERE field_id = ?").bind(fieldId),
     c.env.DB.prepare("DELETE FROM set_fields WHERE id = ? AND set_id = ?").bind(fieldId, setId),
   ]);
   // 削除だけなら残りのフィールドの抽出結果はそのまま使える
@@ -656,4 +658,92 @@ userApi.get("/sets/:id/fields/:key/values", async (c) => {
   const col = f.type === "date" ? "value_date" : "value_num";
   const r = await c.env.DB.prepare(`SELECT MIN(${col}) AS min, MAX(${col}) AS max, COUNT(DISTINCT item_id) AS count FROM item_field_values WHERE field_id = ?`).bind(f.id).first();
   return c.json({ type: f.type, ...r });
+});
+
+// ---- item のカスタムフィールド（表示・手動修正） ----
+
+/** item が属するセットのフィールドすべて（値なしも含む）と、手動修正の有無・抽出状況・修正履歴 */
+async function itemCustomFields(env: Env, itemId: string, subscriptionId: string) {
+  const fields = await env.DB.prepare(
+    `SELECT f.id, f.set_id, f.key, f.label, f.type, f.description, f.position, st.name AS set_name, st.fields_hash
+     FROM set_members m JOIN sets st ON st.id = m.set_id JOIN set_fields f ON f.set_id = st.id WHERE m.subscription_id = ? ORDER BY st.position, st.created_at, f.position, f.created_at`,
+  )
+    .bind(subscriptionId)
+    .all<SetField & { set_name: string; fields_hash: string | null }>();
+  if (!fields.results.length) return [];
+  const vals = await env.DB.prepare("SELECT field_id, value_text, value_num, value_date FROM item_field_values WHERE item_id = ? ORDER BY ord").bind(itemId).all<{ field_id: string; value_text: string | null; value_num: number | null; value_date: string | null }>();
+  const locks = await env.DB.prepare("SELECT field_id, locked_by, locked_at FROM item_field_locks WHERE item_id = ?").bind(itemId).all<{ field_id: string; locked_by: string; locked_at: string }>();
+  const ex = await env.DB.prepare("SELECT set_id, schema_hash, status, error, updated_at FROM item_field_extractions WHERE item_id = ?").bind(itemId).all<{ set_id: string; schema_hash: string; status: string; error: string | null; updated_at: string }>();
+  const edits = await env.DB.prepare("SELECT field_id, action, before_json, after_json, user_id, created_at FROM item_field_edits WHERE item_id = ? ORDER BY created_at DESC LIMIT 50").bind(itemId).all<{ field_id: string; action: string; before_json: string; after_json: string | null; user_id: string; created_at: string }>();
+  return fields.results.map((f) => {
+    const lock = locks.results.find((l) => l.field_id === f.id);
+    const e = ex.results.find((x) => x.set_id === f.set_id);
+    return {
+      set_id: f.set_id,
+      set_name: f.set_name,
+      field_id: f.id,
+      key: f.key,
+      label: f.label,
+      type: f.type,
+      values: vals.results.filter((v) => v.field_id === f.id).map((v) => displayValue(f.type, v)),
+      manual: lock ? { by: lock.locked_by, at: lock.locked_at } : null,
+      extraction: e ? { status: e.schema_hash === f.fields_hash ? e.status : "stale", error: e.error, at: e.updated_at } : { status: "pending" },
+      history: edits.results.filter((h) => h.field_id === f.id).map((h) => ({ action: h.action, before: json(h.before_json, []), after: json(h.after_json, null), by: h.user_id, at: h.created_at })),
+    };
+  });
+}
+
+async function fieldForItem(env: Env, itemId: string, setId: string, key: string): Promise<SetField | { error: string; status: 400 | 404 }> {
+  const it = await env.DB.prepare("SELECT subscription_id FROM items WHERE id = ?").bind(itemId).first<{ subscription_id: string }>();
+  if (!it) return { error: "item_not_found", status: 404 };
+  if (!(await env.DB.prepare("SELECT 1 FROM set_members WHERE set_id = ? AND subscription_id = ?").bind(setId, it.subscription_id).first())) return { error: "item_not_in_set", status: 400 };
+  const f = await env.DB.prepare("SELECT id, set_id, key, label, type, description, position FROM set_fields WHERE set_id = ? AND key = ?").bind(setId, key).first<SetField>();
+  if (!f) return { error: "field_not_found", status: 404 };
+  return f;
+}
+
+/** 手で値を設定（{"values": [...]}。空配列は「値なし」）。以降 AI はこのフィールドを変更しない */
+userApi.put("/items/:id/fields/:setId/:key", async (c) => {
+  const { id, setId, key } = c.req.param();
+  const f = await fieldForItem(c.env, id, setId, key);
+  if ("error" in f) return c.json({ error: f.error }, f.status);
+  const b = await c.req.json<{ values?: unknown[] }>();
+  if (!Array.isArray(b.values)) return c.json({ error: "values_required" }, 400);
+  const r = await setManualValues(c.env, id, f, f.type === "list" ? b.values : b.values[0] ?? null, c.get("userId"));
+  if ("error" in r) return c.json(r, 400);
+  return c.json({ ok: true, ...r });
+});
+
+/** 手動の値をやめて AI の値に戻す */
+userApi.delete("/items/:id/fields/:setId/:key", async (c) => {
+  const { id, setId, key } = c.req.param();
+  const f = await fieldForItem(c.env, id, setId, key);
+  if ("error" in f) return c.json({ error: f.error }, f.status);
+  if (!(await revertManualValues(c.env, id, f, c.get("userId")))) return c.json({ error: "not_manual" }, 400);
+  if (c.env.GEMINI_API_KEY) c.executionCtx.waitUntil(processFieldExtractions(c.env, { setId, itemId: id, limit: 1 }));
+  return c.json({ ok: true });
+});
+
+// ---- セットの公開ページ ----
+userApi.put("/sets/:id/publish", async (c) => {
+  const id = c.req.param("id");
+  const st = await c.env.DB.prepare("SELECT id FROM sets WHERE id = ?").bind(id).first();
+  if (!st) return c.json({ error: "not_found" }, 404);
+  const b = await c.req.json<{ is_public?: boolean; slug?: string; title?: string; description?: string; options?: PublicOptions }>();
+  const slug = (b.slug ?? "").trim().toLowerCase();
+  if (b.is_public && !slug) return c.json({ error: "slug_required" }, 400);
+  if (slug && !SLUG_RE.test(slug)) return c.json({ error: "bad_slug" }, 400);
+  if (slug && (await c.env.DB.prepare("SELECT 1 FROM sets WHERE public_slug = ? AND id != ?").bind(slug, id).first())) return c.json({ error: "slug_taken" }, 409);
+  const fields = await loadFields(c.env, id);
+  const keys = new Map(fields.map((f) => [f.key, f]));
+  const o = b.options ?? {};
+  const opts: PublicOptions = {
+    fields: (o.fields ?? []).filter((k) => keys.has(k)),
+    period: o.period && keys.get(o.period.start)?.type === "date" && keys.get(o.period.end)?.type === "date" ? { start: o.period.start, end: o.period.end } : null,
+    facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
+  };
+  await c.env.DB.prepare("UPDATE sets SET is_public = ?, public_slug = ?, public_title = ?, public_description = ?, public_options_json = ?, updated_at = ? WHERE id = ?")
+    .bind(b.is_public ? 1 : 0, slug || null, (b.title ?? "").trim().slice(0, 80) || null, (b.description ?? "").trim().slice(0, 400) || null, JSON.stringify(opts), nowIso(), id)
+    .run();
+  return c.json({ ok: true, path: slug ? `/p/${slug}` : null });
 });

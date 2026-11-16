@@ -52,6 +52,9 @@ nav.side .nav-heading a.nav-sub { display: inline; padding: 0; font-size: 12px; 
 nav.side a.nav-set { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
 nav.side a.nav-set .count { color: var(--accent); font-size: 12px; font-weight: 600; }
 .field-values { gap: 10px; margin-top: 2px; }
+.manual-mark { margin-left: 2px; color: var(--accent); }
+.custom-fields { margin: 10px 0; display: grid; gap: 8px; }
+.custom-fields td { vertical-align: top; }
 .field-value { white-space: nowrap; }
 .field-form { display: grid; grid-template-columns: 1fr 120px 1fr; gap: 6px; }
 .field-form .wide, .field-form > .row { grid-column: 1 / -1; }
