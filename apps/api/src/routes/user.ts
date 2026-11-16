@@ -18,8 +18,10 @@ async function getSub(env: Env, id: string) {
 }
 
 function subView(s: SubRow & Record<string, unknown>) {
+  const { set_ids_json, ...rest } = s;
   return {
-    ...s,
+    ...rest,
+    set_ids: json<string[]>(set_ids_json as string | null, []),
     config_method: s.config_method ?? null,
     config_kind: s.config_kind ?? null,
   };
@@ -37,6 +39,7 @@ userApi.get("/subscriptions", async (c) => {
        (SELECT COUNT(*) FROM jobs j WHERE j.subscription_id = s.id AND j.kind = 'crawl' AND j.status IN ('queued','leased')) AS active_jobs,
        (SELECT status FROM setup_sessions ss WHERE ss.id = s.current_setup_session_id) AS setup_status,
        (SELECT COUNT(*) FROM config_versions d WHERE d.subscription_id = s.id AND d.state = 'draft') AS draft_count,
+       (SELECT json_group_array(m.set_id) FROM set_members m WHERE m.subscription_id = s.id) AS set_ids_json,
        (SELECT r.run_status || '|' || COALESCE(r.change_status,'') || '|' || COALESCE(r.end_reason,'') FROM crawl_runs r WHERE r.subscription_id = s.id AND r.finished_at IS NOT NULL ORDER BY r.finished_at DESC LIMIT 1) AS last_run
      FROM subscriptions s
      LEFT JOIN config_versions cv ON cv.id = s.active_config_version_id
@@ -88,6 +91,7 @@ userApi.get("/subscriptions/:id", async (c) => {
     versions: versions.results.map((v) => ({ ...v, validation_summary: json((v as { validation_summary_json: string }).validation_summary_json, null) })),
     current_session: session,
     active_job: activeJob,
+    set_ids: (await c.env.DB.prepare("SELECT set_id FROM set_members WHERE subscription_id = ?").bind(s.id).all<{ set_id: string }>()).results.map((r) => r.set_id),
   });
 });
 
@@ -314,6 +318,7 @@ userApi.get("/items", async (c) => {
   const uid = c.get("userId");
   const view = c.req.query("view") ?? "new"; // new（基準データも含め検出・更新の新しい順）| all | baseline | updated
   const sub = c.req.query("subscription_id");
+  const setId = c.req.query("set_id");
   const unread = c.req.query("unread") === "1";
   const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
   const offset = Math.max(Number(c.req.query("offset") ?? 0), 0);
@@ -322,6 +327,10 @@ userApi.get("/items", async (c) => {
   if (sub) {
     where.push("i.subscription_id = ?");
     args.push(sub);
+  }
+  if (setId) {
+    where.push("i.subscription_id IN (SELECT subscription_id FROM set_members WHERE set_id = ?)");
+    args.push(setId);
   }
   if (view === "baseline") where.push("i.is_baseline = 1");
   if (view === "updated") where.push("i.last_changed_at IS NOT NULL");
@@ -387,7 +396,7 @@ userApi.delete("/items/:id/read", async (c) => {
   return c.json({ ok: true });
 });
 userApi.post("/items/mark-read", async (c) => {
-  const b = await c.req.json<{ subscription_id?: string; item_ids?: string[] }>();
+  const b = await c.req.json<{ subscription_id?: string; set_id?: string; item_ids?: string[] }>();
   const now = nowIso();
   if (b.item_ids?.length) {
     await c.env.DB.batch(
@@ -398,10 +407,93 @@ userApi.post("/items/mark-read", async (c) => {
   } else {
     await c.env.DB.prepare(
       `INSERT INTO reading_states (user_id, item_id, read_at) SELECT ?, i.id, ? FROM items i WHERE i.is_baseline = 0 ${b.subscription_id ? "AND i.subscription_id = ?" : ""}
+         ${b.set_id ? "AND i.subscription_id IN (SELECT subscription_id FROM set_members WHERE set_id = ?)" : ""}
        ON CONFLICT(user_id, item_id) DO UPDATE SET read_at = excluded.read_at`,
     )
-      .bind(...[c.get("userId"), now, ...(b.subscription_id ? [b.subscription_id] : [])])
+      .bind(...[c.get("userId"), now, ...(b.subscription_id ? [b.subscription_id] : []), ...(b.set_id ? [b.set_id] : [])])
       .run();
   }
+  return c.json({ ok: true });
+});
+
+// ---- セット（複数の購読先をまとめたもの） ----
+const setName = (v: unknown) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, 60) : "");
+
+async function listSets(env: Env, uid: string) {
+  const rs = await env.DB.prepare(
+    `SELECT st.id, st.name, st.position, st.created_at, st.updated_at,
+       (SELECT COUNT(*) FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id WHERE m.set_id = st.id AND s.status != 'archived') AS member_count,
+       (SELECT COUNT(*) FROM items i WHERE i.is_baseline = 0 AND i.subscription_id IN (SELECT subscription_id FROM set_members WHERE set_id = st.id)
+          AND NOT EXISTS (SELECT 1 FROM reading_states r WHERE r.item_id = i.id AND r.user_id = ?)) AS unread_count
+     FROM sets st ORDER BY st.position, st.created_at`,
+  )
+    .bind(uid)
+    .all<{ id: string; name: string; position: number; member_count: number; unread_count: number }>();
+  return rs.results;
+}
+
+userApi.get("/sets", async (c) => c.json({ sets: await listSets(c.env, c.get("userId")) }));
+
+userApi.post("/sets", async (c) => {
+  const b = await c.req.json<{ name?: string; subscription_ids?: string[] }>();
+  const name = setName(b.name);
+  if (!name) return c.json({ error: "name_required" }, 400);
+  if (await c.env.DB.prepare("SELECT 1 FROM sets WHERE name = ?").bind(name).first()) return c.json({ error: "name_taken" }, 409);
+  const id = newId();
+  const now = nowIso();
+  const pos = await c.env.DB.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM sets").first<{ p: number }>();
+  await c.env.DB.batch([
+    c.env.DB.prepare("INSERT INTO sets (id, name, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").bind(id, name, pos?.p ?? 0, now, now),
+    ...(b.subscription_ids ?? []).slice(0, 500).map((sid) => c.env.DB.prepare("INSERT OR IGNORE INTO set_members (set_id, subscription_id, added_at) SELECT ?, id, ? FROM subscriptions WHERE id = ?").bind(id, now, sid)),
+  ]);
+  return c.json({ set: { id, name } }, 201);
+});
+
+userApi.get("/sets/:id", async (c) => {
+  const st = await c.env.DB.prepare("SELECT * FROM sets WHERE id = ?").bind(c.req.param("id")).first();
+  if (!st) return c.json({ error: "not_found" }, 404);
+  const members = await c.env.DB.prepare(
+    `SELECT s.id, s.input_url, s.display_title, s.status, s.health, json_extract(ch.data_json, '$.title.value') AS channel_title, json_extract(ch.data_json, '$.logo.url') AS channel_logo
+     FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id LEFT JOIN channels ch ON ch.subscription_id = s.id
+     WHERE m.set_id = ? AND s.status != 'archived' ORDER BY m.added_at`,
+  )
+    .bind(st.id)
+    .all();
+  return c.json({ set: st, members: members.results });
+});
+
+userApi.patch("/sets/:id", async (c) => {
+  const id = c.req.param("id");
+  const b = await c.req.json<{ name?: string; position?: number }>();
+  if (!(await c.env.DB.prepare("SELECT 1 FROM sets WHERE id = ?").bind(id).first())) return c.json({ error: "not_found" }, 404);
+  const now = nowIso();
+  if (b.name !== undefined) {
+    const name = setName(b.name);
+    if (!name) return c.json({ error: "name_required" }, 400);
+    if (await c.env.DB.prepare("SELECT 1 FROM sets WHERE name = ? AND id != ?").bind(name, id).first()) return c.json({ error: "name_taken" }, 409);
+    await c.env.DB.prepare("UPDATE sets SET name = ?, updated_at = ? WHERE id = ?").bind(name, now, id).run();
+  }
+  if (typeof b.position === "number") await c.env.DB.prepare("UPDATE sets SET position = ?, updated_at = ? WHERE id = ?").bind(Math.trunc(b.position), now, id).run();
+  return c.json({ ok: true });
+});
+
+/** セットを削除（購読先・item はそのまま） */
+userApi.delete("/sets/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.batch([c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ?").bind(id), c.env.DB.prepare("DELETE FROM sets WHERE id = ?").bind(id)]);
+  return c.json({ ok: true });
+});
+
+userApi.put("/sets/:id/members/:subId", async (c) => {
+  const { id, subId } = c.req.param();
+  if (!(await c.env.DB.prepare("SELECT 1 FROM sets WHERE id = ?").bind(id).first())) return c.json({ error: "not_found" }, 404);
+  if (!(await getSub(c.env, subId))) return c.json({ error: "subscription_not_found" }, 404);
+  await c.env.DB.prepare("INSERT OR IGNORE INTO set_members (set_id, subscription_id, added_at) VALUES (?, ?, ?)").bind(id, subId, nowIso()).run();
+  return c.json({ ok: true });
+});
+
+userApi.delete("/sets/:id/members/:subId", async (c) => {
+  const { id, subId } = c.req.param();
+  await c.env.DB.prepare("DELETE FROM set_members WHERE set_id = ? AND subscription_id = ?").bind(id, subId).run();
   return c.json({ ok: true });
 });

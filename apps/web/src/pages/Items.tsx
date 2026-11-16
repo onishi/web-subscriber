@@ -24,7 +24,7 @@ interface ItemRow {
 
 const stripTags = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-export function ItemList({ subscriptionId, view: initialView = "new", showViewTabs = false }: { subscriptionId?: string; view?: string; showViewTabs?: boolean }) {
+export function ItemList({ subscriptionId, setId, view: initialView = "new", showViewTabs = false }: { subscriptionId?: string; setId?: string; view?: string; showViewTabs?: boolean }) {
   const [view, setView] = useState(initialView);
   const [unread, setUnread] = useState(false);
   const [offset, setOffset] = useState(0);
@@ -32,6 +32,7 @@ export function ItemList({ subscriptionId, view: initialView = "new", showViewTa
   const q = new URLSearchParams({ view, offset: String(offset), limit: "50" });
   if (unread) q.set("unread", "1");
   if (subscriptionId) q.set("subscription_id", subscriptionId);
+  if (setId) q.set("set_id", setId);
   const { data, error, reload, setData } = useApi<{ items: ItemRow[]; has_more: boolean }>(`/items?${q}`);
 
   const markRead = async (it: ItemRow, read: boolean) => {
@@ -61,7 +62,7 @@ export function ItemList({ subscriptionId, view: initialView = "new", showViewTa
         <span className="spacer" />
         <button
           onClick={async () => {
-            await api("/items/mark-read", { method: "POST", json: subscriptionId ? { subscription_id: subscriptionId } : {} });
+            await api("/items/mark-read", { method: "POST", json: subscriptionId ? { subscription_id: subscriptionId } : setId ? { set_id: setId } : {} });
             void reload();
           }}
         >
@@ -249,7 +250,7 @@ export function ItemsPage() {
   return (
     <div>
       <h2>新着</h2>
-      <p className="muted small">初回取得分（基準データ）は新着に含めません。内容が更新された item には「更新」印が付きます。</p>
+      <p className="muted small">初回取得分（基準データ）は既読として表示します。内容が更新された item には「更新」印が付きます。</p>
       <ItemList />
     </div>
   );

@@ -4,6 +4,7 @@ import { api, fmtRelative, fmtTime, RUN_LABEL, CHANGE_LABEL, END_LABEL, TRIGGER_
 import { useApi } from "../hooks.js";
 import { HealthBadge, methodLabel } from "./Subscriptions.js";
 import { ItemList } from "./Items.js";
+import { SetMembership } from "./Sets.js";
 
 export function RunsTable({ subId }: { subId: string }) {
   const { data } = useApi<{ runs: any[] }>(`/subscriptions/${subId}/runs`, { pollMs: 10000 });
@@ -145,6 +146,8 @@ export function SubscriptionPage() {
           <div>{fmtTime(s.last_change_at)}</div>
           <div>次回予定</div>
           <div>{s.status === "active" ? `${fmtTime(s.next_run_at)}（${fmtRelative(s.next_run_at)}）` : "—"}</div>
+          <div>セット</div>
+          <SetMembership subscriptionId={s.id} setIds={data.set_ids ?? []} onChange={() => void reload()} />
           <div>item 画像</div>
           <div className="row">
             <select

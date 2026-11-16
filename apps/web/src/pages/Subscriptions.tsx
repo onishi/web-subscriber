@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
 import { api, fmtRelative, fmtTime, HEALTH_LABEL, END_LABEL, RUN_LABEL, CHANGE_LABEL } from "../api.js";
+import { useState } from "react";
 import { useApi } from "../hooks.js";
+import { useSets } from "./Sets.js";
 
 export function HealthBadge({ health, detail }: { health: string; detail?: string | null }) {
   const cls = health === "ok" ? "ok" : health === "unknown" ? "" : health === "degraded" ? "warn" : "err";
@@ -20,11 +22,26 @@ export function methodLabel(kind?: string | null, method?: string | null) {
 
 export function SubscriptionsPage() {
   const { data, error, reload } = useApi<{ subscriptions: any[] }>("/subscriptions", { pollMs: 15000 });
+  const sets = useSets().data?.sets ?? [];
+  const setName = new Map(sets.map((s) => [s.id, s.name]));
+  const [filter, setFilter] = useState("");
+  const subs = (data?.subscriptions ?? []).filter((s) => !filter || (filter === "none" ? !s.set_ids?.length : s.set_ids?.includes(filter)));
   return (
     <div>
       <div className="row">
         <h2>購読先</h2>
         <span className="spacer" />
+        {sets.length > 0 && (
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="">すべてのセット</option>
+            {sets.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+            <option value="none">セット未所属</option>
+          </select>
+        )}
         <Link to="/add" className="btn">
           ＋ 追加
         </Link>
@@ -46,7 +63,7 @@ export function SubscriptionsPage() {
             </tr>
           </thead>
           <tbody>
-            {data?.subscriptions.map((s) => {
+            {subs.map((s) => {
               const [runStatus, change, end] = (s.last_run ?? "||").split("|");
               return (
                 <tr key={s.id}>
@@ -56,6 +73,15 @@ export function SubscriptionsPage() {
                       <Link to={`/subscriptions/${s.id}`}>{s.display_title || s.channel_title || s.input_url}</Link>
                     </div>
                     <div className="muted small mono">{s.input_url}</div>
+                    {s.set_ids?.length > 0 && (
+                      <div className="row small">
+                        {s.set_ids.map((id: string) => setName.has(id) && (
+                          <Link key={id} to={`/sets/${id}`} className="badge">
+                            {setName.get(id)}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
                   </td>
                   <td>{methodLabel(s.config_kind, s.config_method)}</td>
                   <td>

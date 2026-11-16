@@ -47,6 +47,12 @@ nav.side { border-right: 1px solid var(--line); padding: 16px 12px; background: 
 nav.side h1 { font-size: 15px; margin: 0 0 16px; }
 nav.side a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--text); }
 nav.side a.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+nav.side .nav-heading { display: flex; align-items: center; justify-content: space-between; margin: 16px 10px 4px; font-size: 12px; color: var(--muted); }
+nav.side .nav-heading a.nav-sub { display: inline; padding: 0; font-size: 12px; color: var(--muted); }
+nav.side a.nav-set { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+nav.side a.nav-set .count { color: var(--accent); font-size: 12px; font-weight: 600; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); }
+.chip img { width: 22px; height: 22px; margin-left: -8px; border-radius: 50%; object-fit: cover; }
 main { padding: 20px 24px; max-width: 1200px; width: 100%; }
 h2 { font-size: 18px; margin: 0 0 12px; }
 h3 { font-size: 15px; margin: 20px 0 8px; }
@@ -100,6 +106,7 @@ pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; 
   .app { grid-template-columns: 1fr; }
   nav.side { border-right: none; border-bottom: 1px solid var(--line); display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
   nav.side h1 { margin: 0 8px 0 0; }
+  nav.side .nav-heading { margin: 0 4px 0 12px; }
   main { padding: 14px 16px; }
   .kv { grid-template-columns: 1fr; }
   .table-wrap table { min-width: 900px; }
