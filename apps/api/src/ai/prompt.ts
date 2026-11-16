@@ -1,5 +1,5 @@
 // AI 初期設定・修正提案のプロンプトとツール定義
-import type Anthropic from "@anthropic-ai/sdk";
+import type { FunctionDeclaration } from "@google/genai";
 
 export const SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定エンジニアです。ユーザーが登録したURLを定期購読するための「宣言的な取得・抽出設定(JSON)」を作り、実際に検証してから提出します。
 
@@ -70,11 +70,11 @@ const selectorSchema = {
   properties: { css: { type: "string" }, xpath: { type: "string" } },
 };
 
-export const TOOLS: Anthropic.Tool[] = [
+export const TOOLS: FunctionDeclaration[] = [
   {
     name: "inspect",
     description: "URL を http（JS非実行）または browser（JS実行後）で開き、セレクタの一致数と一致要素のHTML抜粋（最大5件）を返す。構造の確認に使う。",
-    input_schema: {
+    parametersJsonSchema: {
       type: "object",
       properties: {
         url: { type: "string" },
@@ -89,7 +89,7 @@ export const TOOLS: Anthropic.Tool[] = [
     name: "run_extraction",
     description:
       "設定案を VPS で実際に実行し、各ページの取得結果（HTTPステータス・抽出状態・件数・エラー・終了理由）、フィールド充足率、識別キーの一意性、先頭itemのサンプルを返す。methods に http と browser を両方指定すると比較できる。",
-    input_schema: {
+    parametersJsonSchema: {
       type: "object",
       properties: {
         config: { type: "object", description: "設定 DSL の完全な JSON" },
@@ -102,7 +102,7 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "submit_config",
     description: "検証済みの最終設定を提出する。スキーマ検証エラーがあれば返されるので修正して再提出する。",
-    input_schema: {
+    parametersJsonSchema: {
       type: "object",
       properties: {
         config: { type: "object" },

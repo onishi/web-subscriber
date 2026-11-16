@@ -7,14 +7,14 @@ export interface Env {
   ASSETS: Fetcher;
   SETUP_WORKFLOW: Workflow;
   DEFAULT_TIMEZONE: string;
-  CLAUDE_MODEL: string;
+  GEMINI_MODEL: string;
   REPAIR_AFTER_FAILURES: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   DEV_AUTH_BYPASS: string;
-  ANTHROPIC_API_KEY?: string;
-  /** テスト用：Claude API の代わりにモックへ向ける */
-  ANTHROPIC_BASE_URL?: string;
+  GEMINI_API_KEY?: string;
+  /** テスト用：Gemini API の代わりにモックへ向ける */
+  GEMINI_BASE_URL?: string;
 }
 
 export const newId = () => ulid();

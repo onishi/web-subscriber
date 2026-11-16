@@ -16,6 +16,7 @@
 | 初回巡回範囲 | 初回も通常と同じ最大20ページ |
 | robots.txt | 従う（`Web-Subscriber` トークン優先、なければ `*`。最長一致、5xx は全拒否） |
 | User-Agent | `Web-Subscriber/0.0.1 (+連絡先URL)`。browser 方式は Chromium の UA の後ろに付加 |
+| 利用するAI | Gemini API（`@google/genai`、既定モデル `gemini-3.6-flash`。`GEMINI_MODEL` で変更可） |
 | 修正提案 | 自動で作成（抽出異常が2回連続、同一購読先は20時間に1回まで）。稼働中の設定は変えず draft として提示 |
 | 更新された item | 未読には戻さず「更新」印（既読時刻より後に内容が変わったもの）を付ける |
 
@@ -24,7 +25,7 @@
 - http 方式の解析も Chromium DOM で行う。取得済み HTML を `Content-Security-Policy: script-src 'none'` 付きでページに流し込み、同じ抽出バンドルを評価する（JS は実行されない）。
 - クリックで URL 遷移が起きた場合は新しい文書になるため、操作後待機には `wait.initial`（文書の準備完了）を使う。遷移しない操作（replace/append）は `wait.after_paging`（既定 `items_changed`）で「期待した変化」を待つ。
 - AI セッションは Workflows のステップとして耐久実行し、AI のツール呼び出し（inspect / run_extraction）はすべて VPS プローブに変換して `waitForEvent` で完了を待つ。AI の最終提出は zod で検証し、エラーはツール結果として返して修正させる。
-- `ANTHROPIC_API_KEY` 未設定時や AI 失敗時は、RSS/Atom 検出または最大の繰り返し構造による自動判定（origin=heuristic）で提案する。修正提案では現行の種類と識別方法を引き継ぐ。
+- `GEMINI_API_KEY` 未設定時や AI 失敗時は、RSS/Atom 検出または最大の繰り返し構造による自動判定（origin=heuristic）で提案する。修正提案では現行の種類と識別方法を引き継ぐ。
 - R2 キーは保存期間ごとのプレフィックス（`r30/`, `r90/`, `latest/`, `sessions/`）に分け、ライフサイクルルールで削除する。
 
 ---
@@ -38,7 +39,7 @@
 | DB | Cloudflare D1（SQLite） |
 | ファイル | Cloudflare R2（生HTML・フィードXML・DOMスナップショット・スクリーンショット・プローブ結果） |
 | 定期処理 | Workers Cron Trigger（5分毎）：実行予定の計算・ジョブ生成・期限切れリースの回収 |
-| AI制御 | Cloudflare Workflows（長時間・多段のAIセッションを耐久実行）＋ Claude API（`@anthropic-ai/sdk`） |
+| AI制御 | Cloudflare Workflows（長時間・多段のAIセッションを耐久実行）＋ Gemini API（`@google/genai`） |
 | 認証 | 利用者：Cloudflare Access（個人利用）。クローラ：ワーカー別Bearerトークン（ハッシュ保存・スコープ付き） |
 | VPS | Node.js 22 + TypeScript + Playwright（Chromium、バージョン固定）。systemdで常駐、APIをポーリングしてジョブを取得 |
 | 抽出エンジン | http/browser 両方式とも **同一のChromium DOM上で同一の抽出コード** を実行（http方式はJS無効でHTMLをロード）。XMLフィードは名前空間対応XMLパーサ＋XPath 1.0 |
@@ -56,7 +57,7 @@
                  │           └─ /worker/v1/* クローラAPI（Bearer, Accessバイパス）    │
                  │           Cron(5min) ─ スケジューラ / リース回収                   │
                  │           Workflows  ─ AI初期設定・修正提案セッション              │
-                 │             └─▶ Claude API                                       │
+                 │             └─▶ Gemini API                                       │
                  │           D1 (メタデータ・item・履歴)   R2 (生データ・スナップショット) │
                  └──────────────────────────────▲─────────────────────────────────┘
                                                 │ HTTPS (poll / lease / submit)
@@ -644,7 +645,7 @@ Cloudflare Workflows のインスタンス1つ = SetupSession 1つ。各ステ�
    - http版とbrowser版のテキスト量・リンク数・繰り返し構造候補の差分。
    - **圧縮DOMアウトライン**（tag/id/class/短いテキスト、繰り返し構造のクラスタ候補、ページング候補要素：「次へ」「もっと見る」「Next」「›」等のテキスト・rel=next）。HTML全文はAIに渡さず、必要部位だけを渡す。
 2. **フィード判定**：フィードがあれば feed プローブで正規化結果を取得し、AIが「item数・本文の有無・HTML版との網羅性」を比較して feed 採用可否を提案（両方提示）。
-3. **ルール提案ループ**（Claude ツール使用）：AIが使えるツールはすべて「VPSへのプローブジョブ」に変換される。
+3. **ルール提案ループ**（Gemini の関数呼び出し）：AIが使えるツールはすべて「VPSへのプローブジョブ」に変換される。
    - `inspect(selector, method)`：一致要素数と抜粋HTML
    - `run_extraction(config, pages:1)`：設定案での抽出結果・フィールド失敗統計
    - `try_paging(config, max_pages:3)`：ページング試行（replace/append判定、変化検知、終了条件）
@@ -669,10 +670,10 @@ Cloudflare Workflows のインスタンス1つ = SetupSession 1つ。各ステ�
 
 ### 7.4 モデルと呼び出し【提案】
 
-- モデル：`claude-opus-5-5`（Claude API, `@anthropic-ai/sdk`）。`thinking: {type:"adaptive"}`、`output_config.effort: "high"`、ストリーミング＋`finalMessage()`。
-- 安全側の拒否（`stop_reason: "refusal"`）に備え、server-side fallback（`fallbacks: "default"`）を有効化。拒否時はセッションを「AI提案不可」として手動設定へ誘導。
-- システムプロンプト・ツール定義・DSL仕様を固定プレフィックスにしてプロンプトキャッシュを効かせる。
-- APIキーは Workers Secret。セッション単位でトークン使用量を記録し、上限（例：1セッション $1 相当）で打ち切り。
+- モデル：Gemini API の `gemini-3.6-flash`（Stable、`@google/genai`、`GEMINI_MODEL` で変更可）。関数呼び出しでツールを使い、モデル応答の parts（thought signature を含む）はそのまま履歴に保持して返す。
+- 安全フィルタでブロックされた場合（`promptFeedback.blockReason` や `finishReason: SAFETY` 等）は AI 提案を打ち切り、自動判定（heuristic）に切り替える。
+- システムプロンプト・ツール定義・DSL仕様は固定し、会話の先頭に置く（暗黙キャッシュが効きやすい構成）。
+- APIキーは Workers Secret（`GEMINI_API_KEY`）。1セッションのAIターン数は16回で打ち切る（トークン使用量の記録・金額上限は未実装）。
 
 ---
 
@@ -740,7 +741,7 @@ Cloudflare Workflows のインスタンス1つ = SetupSession 1つ。各ステ�
 | P2 HTML抽出(http) | ルールDSL評価器（Chromium注入）、変換処理、0件/破損区別、手動設定での購読 | fixtures のHTML-onlyページで抽出・差分 |
 | P3 browser・待機・ページング | 待機DSL、replace/append、終了・循環・上限判定、ページ単位送信、outbox再送 | JS描画・replace・append fixturesで通過 |
 | P4 Web画面 | 一覧・新着・既読・履歴・手動クロール・一時停止・設定編集/検証/有効化 | ブラウザで E2E 操作可能 |
-| P5 AI初期設定 | Workflows、プローブ種別、Claudeツールループ、検証レポート、プレビュー画面 | URL入力から保存まで一気通貫 |
+| P5 AI初期設定 | Workflows、プローブ種別、Gemini 関数呼び出しループ、検証レポート、プレビュー画面 | URL入力から保存まで一気通貫 |
 | P6 修正提案 | 失敗検知、repairセッション、比較画面、再基準化 | 構造変更fixtureで修正案→比較→有効化 |
 | P7 運用 | R2ライフサイクル、監視（VPS死活・滞留ジョブ）、バックアップ（D1 Time Travel） | |
 
@@ -773,7 +774,7 @@ Cloudflare Workflows のインスタンス1つ = SetupSession 1つ。各ステ�
 | 1 | Cloudflare構成 | Workers(Hono)+Static Assets+D1+R2+Workflows+Cron+Access | 【提案】 |
 | 2 | DB/ファイル | D1 / R2 | 【提案】 |
 | 3 | 技術選定 | React+Vite / Hono / Node+Playwright（pnpm monorepo, TypeScript統一） | 【提案】 |
-| 4 | AIモデル | Claude API `claude-opus-5-5`、adaptive thinking、構造化出力、ツール使用（プローブ経由） | 【提案】 |
+| 4 | AIモデル | Gemini API `gemini-3.6-flash`、関数呼び出し（プローブ経由） | 【確定】Gemini に変更 |
 | 5 | 認証 | Cloudflare Access（本人メールのみ許可）。クローラはBearerトークン | 【提案】 |
 | 6 | タイムゾーン・実行時刻 | Asia/Tokyo、購読IDのハッシュで1日内に分散 | 【確定】時間帯は絞らない |
 | 7 | 上限・リトライ | 6.5 の既定値 | 【提案】 |

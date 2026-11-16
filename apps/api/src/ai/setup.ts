@@ -1,7 +1,7 @@
 // AI による初期設定・修正提案（Cloudflare Workflows）。docs/design.md §7
 // AI が試したい操作はすべて VPS へのプローブジョブに変換し、結果を待ってから次のターンへ進む。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI, type Content, type Part } from "@google/genai";
 import { parseConfig, identityScheme, hashScheme, schemeHash, type SubscriptionConfig, type ProbeRequest } from "@ws/shared";
 import { type Env, newId, nowIso, json } from "../env.js";
 import { enqueueProbe } from "../jobs.js";
@@ -189,14 +189,14 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
 
       // 2) 提案（AI or 自動判定）
       let proposal: Proposal | null = null;
-      if (env.ANTHROPIC_API_KEY) {
+      if (env.GEMINI_API_KEY) {
         try {
           proposal = await this.aiLoop(step, p, discovery);
         } catch (e) {
           await sdo(step, "ai-failed", async () => addProgress(env, sid, "ai-error", "error", `AI提案に失敗したため自動判定に切り替えます: ${(e as Error).message}`));
         }
       } else {
-        await sdo(step, "no-ai", async () => addProgress(env, sid, "propose", "info", "ANTHROPIC_API_KEY 未設定のため自動判定で提案します"));
+        await sdo(step, "no-ai", async () => addProgress(env, sid, "propose", "info", "GEMINI_API_KEY 未設定のため自動判定で提案します"));
       }
       if (!proposal)
         proposal = await sdo(step, "heuristic", async () => {
@@ -266,40 +266,45 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
           `これは稼働中の購読設定の「修正提案」です。現在の設定で抽出が失敗しています。現行設定をできるだけ保ちながら、壊れた部分（セレクタ・待機条件など）を直してください。識別方法（identity）は既存itemとの照合のため、可能な限り変えないでください。\n\n現行設定:\n${cv?.config_json}\n\n失敗した実行:\n${JSON.stringify(run)}\n${JSON.stringify(pages?.results)}\n\n` +
           intro;
       }
-      const msgs: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: intro + "\n\nツールで検証しながら設定を作り、submit_config で提出してください。" }];
+      const msgs: Content[] = [{ role: "user", parts: [{ text: intro + "\n\nツールで検証しながら設定を作り、submit_config で提出してください。" }] }];
       await env.BLOBS.put(key("0"), JSON.stringify(msgs));
     });
 
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, baseURL: env.ANTHROPIC_BASE_URL || undefined });
+    const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, httpOptions: env.GEMINI_BASE_URL ? { baseUrl: env.GEMINI_BASE_URL } : undefined });
     let nudges = 0;
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const res = await sdo(step, `ai-turn-${turn}`, { retries: { limit: 2, delay: "15 seconds", backoff: "exponential" }, timeout: "10 minutes" }, async () => {
-        const msgs = (await (await env.BLOBS.get(key(String(turn))))!.json()) as Anthropic.Beta.BetaMessageParam[];
-        const r = await client.beta.messages.create({
-          model: env.CLAUDE_MODEL || "claude-opus-5-5",
-          max_tokens: 16000,
-          betas: ["server-side-fallback-2026-07-01"],
-          fallbacks: "default",
-          thinking: { type: "adaptive" },
-          output_config: { effort: "high" },
-          system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-          tools: TOOLS,
-          tool_choice: { type: "auto" },
-          messages: msgs,
-        } as unknown as Anthropic.Beta.MessageCreateParamsNonStreaming);
-        msgs.push({ role: "assistant", content: r.content as Anthropic.Beta.BetaContentBlockParam[] });
+        const msgs = (await (await env.BLOBS.get(key(String(turn))))!.json()) as Content[];
+        const r = await client.models.generateContent({
+          model: env.GEMINI_MODEL || "gemini-3.6-flash",
+          contents: msgs,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            tools: [{ functionDeclarations: TOOLS }],
+            maxOutputTokens: 32000,
+          },
+        });
+        const cand = r.candidates?.[0];
+        const blocked = r.promptFeedback?.blockReason ?? (cand && ["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"].includes(String(cand.finishReason)) ? cand.finishReason : null);
+        if (blocked) return { blocked: String(blocked), uses: [], text: "" };
+        // モデルの応答はそのまま履歴に残す（thought signature を保持するため）
+        const content: Content = cand?.content ?? { role: "model", parts: [] };
+        msgs.push({ role: "model", parts: content.parts ?? [] });
         await env.BLOBS.put(key(`${turn}-a`), JSON.stringify(msgs));
-        const uses = r.content.filter((b) => b.type === "tool_use").map((b) => ({ id: (b as { id: string }).id, name: (b as { name: string }).name, input: (b as { input: unknown }).input }));
-        const text = r.content
-          .filter((b) => b.type === "text")
-          .map((b) => (b as { text: string }).text)
+        const parts: Part[] = content.parts ?? [];
+        const uses = parts
+          .filter((pt) => pt.functionCall)
+          .map((pt, i) => ({ id: pt.functionCall!.id ?? `call-${turn}-${i}`, name: pt.functionCall!.name ?? "", input: (pt.functionCall!.args ?? {}) as Record<string, unknown> }));
+        const text = parts
+          .filter((pt) => pt.text && !pt.thought)
+          .map((pt) => pt.text)
           .join("\n");
-        return { stop: r.stop_reason, uses: JSON.parse(JSON.stringify(uses)) as { id: string; name: string; input: Record<string, unknown> }[], text: text.slice(0, 500) };
+        return { blocked: null as string | null, uses, text: text.slice(0, 500) };
       });
-      if (res.stop === "refusal") throw new Error("AIが要求を処理できませんでした（refusal）");
+      if (res.blocked) throw new Error(`AIが要求を処理できませんでした（${res.blocked}）`);
       if (res.text) await sdo(step, `ai-note-${turn}`, async () => addProgress(env, p.sessionId, `ai-${turn}`, "info", res.text.slice(0, 300)));
 
-      const results: { tool_use_id: string; content: string; is_error?: boolean }[] = [];
+      const results: { tool_use_id: string; name: string; content: string; is_error?: boolean }[] = [];
       let accepted: Proposal | null = null;
       if (res.uses.length === 0) {
         if (++nudges > 2) throw new Error("AIが設定を提出しませんでした");
@@ -310,9 +315,9 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
         if (u.name === "submit_config") {
           const parsed = parseConfig(u.input.config);
           if (!parsed.ok) {
-            results.push({ tool_use_id: u.id, content: "スキーマ検証エラー:\n" + parsed.errors.join("\n"), is_error: true });
+            results.push({ tool_use_id: u.id, name: u.name, content: "スキーマ検証エラー:\n" + parsed.errors.join("\n"), is_error: true });
           } else if (!sameSite(parsed.config.source.url, p.url)) {
-            results.push({ tool_use_id: u.id, content: "source.url は登録URLと同じサイトでなければなりません", is_error: true });
+            results.push({ tool_use_id: u.id, name: u.name, content: "source.url は登録URLと同じサイトでなければなりません", is_error: true });
           } else {
             accepted = {
               config: parsed.config,
@@ -321,7 +326,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
               feed_assessment: u.input.feed_assessment ? String(u.input.feed_assessment) : undefined,
               origin: p.kind === "repair" ? "ai_repair" : "ai_setup",
             };
-            results.push({ tool_use_id: u.id, content: "受理しました。" });
+            results.push({ tool_use_id: u.id, name: u.name, content: "受理しました。" });
           }
           continue;
         }
@@ -341,21 +346,25 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
           }
         } else err = `unknown tool ${u.name}`;
         if (err || !req) {
-          results.push({ tool_use_id: u.id, content: err ?? "invalid", is_error: true });
+          results.push({ tool_use_id: u.id, name: u.name, content: err ?? "invalid", is_error: true });
           continue;
         }
         await sdo(step, `${tag}-progress`, async () => addProgress(env, p.sessionId, `ai-${turn}`, "info", `${u.name} を VPS で実行中`));
         try {
           const summary = await this.probe(step, p.sessionId, tag, req);
-          results.push({ tool_use_id: u.id, content: truncateJson(req.kind === "extract" ? summarizeExtraction(summary) : summary, 30000) });
+          results.push({ tool_use_id: u.id, name: u.name, content: truncateJson(req.kind === "extract" ? summarizeExtraction(summary) : summary, 30000) });
         } catch (e) {
-          results.push({ tool_use_id: u.id, content: `実行エラー: ${(e as Error).message}`, is_error: true });
+          results.push({ tool_use_id: u.id, name: u.name, content: `実行エラー: ${(e as Error).message}`, is_error: true });
         }
       }
       await sdo(step, `ai-turn-${turn}-results`, async () => {
-        const msgs = (await (await env.BLOBS.get(key(`${turn}-a`)))!.json()) as Anthropic.Beta.BetaMessageParam[];
-        if (results.length) msgs.push({ role: "user", content: results.map((r) => ({ type: "tool_result" as const, ...r })) });
-        else msgs.push({ role: "user", content: "検証が済んだら submit_config ツールで設定を提出してください。" });
+        const msgs = (await (await env.BLOBS.get(key(`${turn}-a`)))!.json()) as Content[];
+        if (results.length)
+          msgs.push({
+            role: "user",
+            parts: results.map((r) => ({ functionResponse: { id: r.tool_use_id, name: r.name, response: r.is_error ? { error: r.content } : { output: r.content } } })),
+          });
+        else msgs.push({ role: "user", parts: [{ text: "検証が済んだら submit_config ツールで設定を提出してください。" }] });
         await env.BLOBS.put(key(String(turn + 1)), JSON.stringify(msgs));
       });
       if (accepted) return accepted;

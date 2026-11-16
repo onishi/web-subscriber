@@ -49,7 +49,7 @@ PORT=8790 node packages/fixtures/src/server.mjs
 cd apps/crawler && pnpm build && WS_WORKER_TOKEN=<発行したトークン> WS_ALLOW_PRIVATE_HOSTS=1 node dist/main.js
 ```
 
-http://127.0.0.1:8787 を開くと画面が使えます。`ANTHROPIC_API_KEY` を `.dev.vars` に入れると AI 提案が有効になります（未設定時は RSS/Atom 検出と繰り返し構造による自動判定で提案）。
+http://127.0.0.1:8787 を開くと画面が使えます。`GEMINI_API_KEY` を `.dev.vars` に入れると AI（Gemini）による提案が有効になります（未設定時は RSS/Atom 検出と繰り返し構造による自動判定で提案）。
 
 ### テスト
 
@@ -67,7 +67,7 @@ E2E（上記の wrangler dev・フィクスチャ・クローラが起動して�
 WS_WORKER_TOKEN=<トークン> node scripts/e2e.mjs
 ```
 
-AI ツールループの配線（ツール呼び出し → VPS プローブ → 結果 → 提出・スキーマ検証）は、`scripts/mock-anthropic.mjs` を起動し、`.dev.vars` に `ANTHROPIC_API_KEY=dummy` と `ANTHROPIC_BASE_URL=http://127.0.0.1:8791` を設定して確認できます（モデルの判断品質は検証しません）。
+AI ツールループの配線（ツール呼び出し → VPS プローブ → 結果 → 提出・スキーマ検証）は、`scripts/mock-gemini.mjs` を起動し、`.dev.vars` に `GEMINI_API_KEY=dummy` と `GEMINI_BASE_URL=http://127.0.0.1:8791` を設定して確認できます（モデルの判断品質は検証しません）。
 
 ## デプロイ
 
@@ -88,7 +88,7 @@ cd apps/api && npx wrangler r2 bucket create web-subscriber-blobs && npx wrangle
 ```
 
 ```bash
-cd apps/api && npx wrangler secret put ANTHROPIC_API_KEY
+cd apps/api && npx wrangler secret put GEMINI_API_KEY
 ```
 
 ```bash
