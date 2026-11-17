@@ -33,12 +33,36 @@ export interface PublicOptions {
   /** タブごとの並び順（期間を使わないときは all だけを使う） */
   sort?: Partial<Record<PublicTab, PublicSort>>;
   default_tab?: PublicTab;
+  /** すべてのタブにかかる絞り込み条件（すべて満たすものだけを表示） */
+  filters?: PublicFilter[];
 }
+/**
+ * 絞り込み条件。key は published（日付）/ image / excerpt（概要）/ f:<フィールドのキー>。
+ * op：not_empty / empty（共通）、future（今日以降）/ past（今日より前）（日付）、
+ * eq / ne（テキスト・複数値。value と一致する値がある / ない）、gte / lte（数値）、true / false（真偽）
+ */
+export interface PublicFilter {
+  key: string;
+  op: FilterOp;
+  value?: string | number;
+}
+export type FilterOp = "not_empty" | "empty" | "future" | "past" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
 
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export const LAYOUTS: PublicLayout[] = ["list", "cards", "compact", "table"];
 const TABS: PublicTab[] = ["now", "upcoming", "all"];
 const DEFAULT_SORT: Record<PublicTab, PublicSort> = { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" } };
+/** 項目の種類ごとに使える条件 */
+export const FILTER_OPS: Record<"date" | "text" | "list" | "number" | "boolean" | "plain", FilterOp[]> = {
+  date: ["not_empty", "empty", "future", "past"],
+  text: ["not_empty", "empty", "eq", "ne"],
+  list: ["not_empty", "empty", "eq", "ne"],
+  number: ["not_empty", "empty", "gte", "lte"],
+  boolean: ["not_empty", "empty", "true", "false"],
+  plain: ["not_empty", "empty"],
+};
+const filterKind = (key: string, keys: Map<string, SetField>): keyof typeof FILTER_OPS | null =>
+  key === "published" ? "date" : key === "image" || key === "excerpt" ? "plain" : key.startsWith("f:") ? (keys.get(key.slice(2))?.type ?? null) : null;
 const clampInt = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d);
 
 /** 保存時・表示時の両方で使う。存在しないフィールドや不正な値は捨てて既定値に寄せる */
@@ -70,6 +94,18 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     ];
   }
   if (!display.includes("title")) display.unshift("title"); // タイトルは必ず出す
+  const filters: PublicFilter[] = [];
+  for (const x of Array.isArray(o.filters) ? o.filters.slice(0, 10) : []) {
+    const kind = x && typeof x.key === "string" ? filterKind(x.key, keys) : null;
+    if (!kind || !FILTER_OPS[kind].includes(x.op)) continue;
+    if (x.op === "eq" || x.op === "ne") {
+      const value = typeof x.value === "string" ? x.value.trim().slice(0, 100) : "";
+      if (value) filters.push({ key: x.key, op: x.op, value });
+    } else if (x.op === "gte" || x.op === "lte") {
+      const value = typeof x.value === "number" ? x.value : Number(x.value);
+      if (x.value !== "" && x.value != null && Number.isFinite(value)) filters.push({ key: x.key, op: x.op, value });
+    } else filters.push({ key: x.key, op: x.op });
+  }
   return {
     display,
     fields: display.filter((k) => k.startsWith("f:")).map((k) => k.slice(2)),
@@ -81,6 +117,7 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     per_page: clampInt(o.per_page, 10, 100, 30),
     sort,
     default_tab: period && TABS.includes(o.default_tab as PublicTab) ? (o.default_tab as PublicTab) : "now",
+    filters,
   };
 }
 
@@ -189,6 +226,66 @@ publicPages.get("/:slug", async (c) => {
       args.push(today);
     }
   }
+  // 設定された絞り込み条件（すべてのタブにかかる）
+  const IMAGE = "COALESCE(i.image_url, json_extract(i.detail_json, '$.native.extracted_fields.image'))";
+  const SUMMARY =
+    "COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value'), json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value'))";
+  for (const fl of opts.filters) {
+    if (fl.key === "image" || fl.key === "excerpt") {
+      const e = fl.key === "image" ? IMAGE : SUMMARY;
+      where.push(fl.op === "empty" ? `COALESCE(${e}, '') = ''` : `COALESCE(${e}, '') != ''`);
+    } else if (fl.key === "published") {
+      const d = "date(i.published_sort, '+9 hours')"; // 日本時間の日付で比べる
+      if (fl.op === "empty") where.push("i.published_sort IS NULL");
+      else if (fl.op === "not_empty") where.push("i.published_sort IS NOT NULL");
+      else {
+        where.push(`${d} ${fl.op === "future" ? ">=" : "<"} ?`);
+        args.push(today);
+      }
+    } else {
+      const f = byKey.get(fl.key.slice(2));
+      if (!f) continue;
+      const has = (cond: string) => `EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND ${cond})`;
+      const c2 = `fv.${col(f)}`;
+      const nonEmpty = `${c2} IS NOT NULL${col(f) === "value_text" ? ` AND ${c2} != ''` : ""}`;
+      switch (fl.op) {
+        case "not_empty":
+          where.push(has(nonEmpty));
+          args.push(f.id);
+          break;
+        case "empty":
+          where.push(`NOT ${has(nonEmpty)}`);
+          args.push(f.id);
+          break;
+        case "future": // どれかの日付が今日以降
+          where.push(has(`${c2} >= ?`));
+          args.push(f.id, today);
+          break;
+        case "past": // 日付があり、すべて今日より前
+          where.push(`${has(nonEmpty)} AND NOT ${has(`${c2} >= ?`)}`);
+          args.push(f.id, f.id, today);
+          break;
+        case "eq":
+          where.push(has(`${c2} = ?`));
+          args.push(f.id, fl.value);
+          break;
+        case "ne":
+          where.push(`NOT ${has(`${c2} = ?`)}`);
+          args.push(f.id, fl.value);
+          break;
+        case "gte":
+        case "lte":
+          where.push(has(`${c2} ${fl.op === "gte" ? ">=" : "<="} ?`));
+          args.push(f.id, fl.value);
+          break;
+        case "true":
+        case "false":
+          where.push(has(`${c2} = ${fl.op === "true" ? 1 : 0}`));
+          args.push(f.id);
+          break;
+      }
+    }
+  }
   // 並び順：値のないものは常に後ろ
   const sort = opts.sort[tab] ?? DEFAULT_SORT.all;
   const dir = sort.dir === "asc" ? "ASC" : "DESC";
@@ -212,8 +309,8 @@ publicPages.get("/:slug", async (c) => {
   }
   const rs = await c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
-       COALESCE(i.image_url, json_extract(i.detail_json, '$.native.extracted_fields.image')) AS image,
-       COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value'), json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value')) AS summary,
+       ${IMAGE} AS image,
+       ${SUMMARY} AS summary,
        COALESCE(json_extract(i.detail_json, '$.published_at.value'), json_extract(i.data_json, '$.published_at.value')) AS published
      FROM items i WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`,
   )

@@ -609,6 +609,31 @@ const LAYOUT_CHOICES: [string, string, string][] = [
 ];
 
 /** セットの公開ページ（radar.wagaya.org/<slug>）の設定 */
+type FilterOp = "not_empty" | "empty" | "future" | "past" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
+type FilterKind = "date" | "text" | "list" | "number" | "boolean" | "plain";
+type Filter = { key: string; op: FilterOp; value?: string | number };
+// サーバー側（public.ts の FILTER_OPS）と合わせる
+const FILTER_OPS: Record<FilterKind, FilterOp[]> = {
+  date: ["not_empty", "empty", "future", "past"],
+  text: ["not_empty", "empty", "eq", "ne"],
+  list: ["not_empty", "empty", "eq", "ne"],
+  number: ["not_empty", "empty", "gte", "lte"],
+  boolean: ["not_empty", "empty", "true", "false"],
+  plain: ["not_empty", "empty"],
+};
+const FILTER_OP_LABEL: Record<FilterOp, string> = {
+  not_empty: "空ではない",
+  empty: "空",
+  future: "今日以降",
+  past: "今日より前",
+  eq: "と一致する",
+  ne: "と一致しない",
+  gte: "以上",
+  lte: "以下",
+  true: "はい",
+  false: "いいえ",
+};
+
 function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; reload: () => Promise<unknown> }) {
   const opts = (() => {
     try {
@@ -643,6 +668,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     per_page: (opts.per_page ?? 30) as number,
     sort: { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" }, ...(opts.sort ?? {}) } as Record<SortTab, { key: string; dir: string }>,
     default_tab: (opts.default_tab ?? "now") as SortTab,
+    filters: (Array.isArray(opts.filters) ? opts.filters : []) as Filter[],
   });
   const hasPeriod = !!(form.periodStart && form.periodEnd);
   const sortKeys: [string, string][] = [
@@ -662,6 +688,15 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     ...fields.map((f) => [`f:${f.key}`, f.label] as [string, string]),
   ];
   const label = new Map(candidates);
+  // 絞り込み条件に使える項目と、その種類
+  const filterKeys: [string, string, FilterKind][] = [
+    ["published", "日付", "date"],
+    ["image", "画像", "plain"],
+    ["excerpt", "概要", "plain"],
+    ...fields.map((f) => [`f:${f.key}`, f.label, f.type as FilterKind] as [string, string, FilterKind]),
+  ];
+  const kindOf = new Map(filterKeys.map(([k, , t]) => [k, t]));
+  const setFilter = (i: number, x: Partial<Filter>) => setForm({ ...form, filters: form.filters.map((f, j) => (j === i ? { ...f, ...x } : f)) });
   const shownItems = form.display.filter((k) => label.has(k));
   const move = (k: string, d: -1 | 1) => {
     const a = [...shownItems];
@@ -698,6 +733,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 per_page: form.per_page,
                 sort: hasPeriod ? form.sort : { all: form.sort.all },
                 default_tab: form.default_tab,
+                filters: form.filters.filter((f) => kindOf.has(f.key)),
               },
             },
           });
@@ -822,6 +858,57 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
             <span className="muted">（リストは右、カードは上。コンパクトと表では出しません）</span>
           </label>
           <span className="muted">上から順に表示します。表では左からの列の順になります。</span>
+        </div>
+        <div>表示する条件</div>
+        <div className="filter-rows">
+          {form.filters.map((f, i) => {
+            const ops = FILTER_OPS[kindOf.get(f.key) ?? "plain"];
+            return (
+              <div key={i} className="row">
+                <select
+                  value={f.key}
+                  onChange={(e) => {
+                    const k = e.target.value;
+                    const o = FILTER_OPS[kindOf.get(k) ?? "plain"];
+                    setFilter(i, { key: k, op: o.includes(f.op) ? f.op : o[0], value: undefined });
+                  }}
+                >
+                  {!kindOf.has(f.key) && <option value={f.key}>（削除された項目）</option>}
+                  {filterKeys.map(([k, l]) => (
+                    <option key={k} value={k}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+                <span className="muted">が</span>
+                {(f.op === "eq" || f.op === "ne" || f.op === "gte" || f.op === "lte") && (
+                  <input
+                    type={f.op === "gte" || f.op === "lte" ? "number" : "text"}
+                    style={{ width: f.op === "gte" || f.op === "lte" ? 96 : 160 }}
+                    value={f.value ?? ""}
+                    placeholder="値"
+                    onChange={(e) => setFilter(i, { value: e.target.value })}
+                  />
+                )}
+                <select value={f.op} onChange={(e) => setFilter(i, { op: e.target.value as FilterOp })}>
+                  {ops.map((o) => (
+                    <option key={o} value={o}>
+                      {FILTER_OP_LABEL[o]}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" className="link small" title="この条件を外す" onClick={() => setForm({ ...form, filters: form.filters.filter((_, j) => j !== i) })}>
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+          <div className="row">
+            <button type="button" className="link small" disabled={form.filters.length >= 10} onClick={() => setForm({ ...form, filters: [...form.filters, { key: "published", op: "not_empty" }] })}>
+              ＋ 条件を追加
+            </button>
+            <span className="muted">すべての条件を満たす情報だけを表示します（どのタブにもかかります）</span>
+          </div>
         </div>
         <div>並び順</div>
         <div className="sort-rows">
