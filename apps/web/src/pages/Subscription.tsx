@@ -60,6 +60,61 @@ export function RunsTable({ subId }: { subId: string }) {
   );
 }
 
+/** 表示名：ソースのタイトル（channel.title）はそのまま残し、画面上の名前だけ差し替える */
+function DisplayTitle({ sub, original, reload }: { sub: any; original: string | null; reload: () => Promise<unknown> }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const save = async (display_title: string | null) => {
+    try {
+      await api(`/subscriptions/${sub.id}`, { method: "PATCH", json: { display_title } });
+      setEditing(false);
+      void reload();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  };
+  if (editing)
+    return (
+      <form
+        className="row display-title-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save(value);
+        }}
+      >
+        <input type="text" autoFocus value={value} maxLength={120} placeholder={original ?? sub.input_url} onChange={(e) => setValue(e.target.value)} />
+        <button type="submit" className="primary">保存</button>
+        <button type="button" onClick={() => setEditing(false)}>キャンセル</button>
+      </form>
+    );
+  return (
+    <div className="display-title">
+      <h2>
+        {sub.display_title || original || sub.input_url}
+        <button
+          type="button"
+          className="link small"
+          title="表示名を設定"
+          onClick={() => {
+            setValue(sub.display_title ?? original ?? "");
+            setEditing(true);
+          }}
+        >
+          ✎ 表示名
+        </button>
+      </h2>
+      {sub.display_title && (
+        <div className="small muted">
+          元のタイトル：{original ?? "（未取得）"}
+          <button type="button" className="link small" onClick={() => void save(null)}>
+            元に戻す
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SubscriptionPage() {
   const { id } = useParams();
   const { data, reload } = useApi<any>(`/subscriptions/${id}`, { pollMs: 10000 });
@@ -72,7 +127,7 @@ export function SubscriptionPage() {
     <div>
       <div className="row">
         {data.channel?.logo?.url && <img className="logo" src={data.channel.logo.url} alt="" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = "none")} />}
-        <h2>{s.display_title || data.channel?.title?.value || s.input_url}</h2>
+        <DisplayTitle sub={s} original={data.channel?.title?.value ?? null} reload={reload} />
         <span className="spacer" />
         {s.status === "active" && (
           <button

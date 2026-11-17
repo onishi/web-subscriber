@@ -54,4 +54,12 @@ describe("itemText", () => {
     expect(t).toContain("本文: 会期： 10月11日 から");
     expect(t).not.toContain("x()");
   });
+  it("keeps the list summary when the detail page overrides it", () => {
+    const base = { links: [], authors: [], contributors: [], categories: [], extensions: [], native: { format: "html", extracted_fields: {} } };
+    const list = { ...base, title: { type: "text", value: "特別展" }, summary: { type: "text", value: "2027年10月8日（金）～12月5日（日）" } };
+    const detail = { ...base, summary: { type: "text", value: "島津家の歴史と文化を紹介する特別展" } };
+    const t = itemText({ data_json: JSON.stringify(list), detail_json: JSON.stringify(detail) });
+    expect(t).toContain("概要: 島津家の歴史と文化を紹介する特別展");
+    expect(t).toContain("一覧ページの概要: 2027年10月8日（金）～12月5日（日）");
+  });
 });

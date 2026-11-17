@@ -140,7 +140,8 @@ const stripHtml = (s: string) =>
 
 /** AI に渡す item のテキスト（一覧の値に詳細ページの値を重ねたもの） */
 export function itemText(row: { data_json: string; detail_json: string | null }): string {
-  const d = mergeDetail(JSON.parse(row.data_json) as ItemData, json<ItemData | null>(row.detail_json, null));
+  const list = JSON.parse(row.data_json) as ItemData;
+  const d = mergeDetail(list, json<ItemData | null>(row.detail_json, null));
   const parts: string[] = [];
   if (d.title?.value) parts.push(`タイトル: ${stripHtml(d.title.value)}`);
   const pub = d.published_at?.value ?? d.published_at?.raw;
@@ -148,6 +149,9 @@ export function itemText(row: { data_json: string; detail_json: string | null })
   if (d.updated_at?.value) parts.push(`更新日: ${d.updated_at.value}`);
   if (d.categories.length) parts.push(`カテゴリ: ${d.categories.map((c) => c.label ?? c.term).join(", ")}`);
   if (d.summary?.value) parts.push(`概要: ${stripHtml(d.summary.value)}`);
+  // 詳細ページの値で上書きされた一覧側の概要（会期などが入っていることが多い）も渡す
+  if (list.summary?.value && list.summary.value !== d.summary?.value) parts.push(`一覧ページの概要: ${stripHtml(list.summary.value)}`);
+  if (list.published_at?.raw && list.published_at.raw !== pub) parts.push(`一覧ページの日付: ${list.published_at.raw}`);
   if (d.content?.kind === "inline") parts.push(`本文: ${stripHtml(d.content.value)}`);
   if (d.native.format === "html") {
     for (const [k, v] of Object.entries(d.native.extracted_fields)) {

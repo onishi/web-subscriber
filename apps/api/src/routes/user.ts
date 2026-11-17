@@ -121,7 +121,11 @@ userApi.patch("/subscriptions/:id", async (c) => {
     // 再試行時は見つからなかった item も確認し直す
     if (b.item_image_mode === null) await c.env.DB.prepare("UPDATE items SET image_checked_at = NULL WHERE subscription_id = ? AND image_url IS NULL").bind(s.id).run();
   }
-  if (b.display_title !== undefined) await c.env.DB.prepare("UPDATE subscriptions SET display_title = ?, updated_at = ? WHERE id = ?").bind(b.display_title, now, s.id).run();
+  if (b.display_title !== undefined) {
+    // 空なら表示名を外して、ソースのタイトルに戻す（ソースのタイトル自体は channels に残っている）
+    const t = typeof b.display_title === "string" ? b.display_title.replace(/\s+/g, " ").trim().slice(0, 120) : "";
+    await c.env.DB.prepare("UPDATE subscriptions SET display_title = ?, updated_at = ? WHERE id = ?").bind(t || null, now, s.id).run();
+  }
   if (b.schedule_minute_of_day !== undefined || b.schedule_interval_minutes !== undefined) {
     const m = Math.max(0, Math.min(1439, b.schedule_minute_of_day ?? s.schedule_minute_of_day));
     const iv = Math.max(60, b.schedule_interval_minutes ?? s.schedule_interval_minutes);
