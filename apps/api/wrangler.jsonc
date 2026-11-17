@@ -11,8 +11,9 @@
     // radar ホストでは公開ページを返すため、ビルド済みアセット以外は Worker が先に受ける
     "run_worker_first": ["/*", "!/assets/*"]
   },
-  // reader：管理画面（Cloudflare Access で保護）、radar：公開ページ。workers.dev はクローラの API 用に残す
-  "workers_dev": true,
+  // reader：管理画面と API（Cloudflare Access で保護。/worker はバイパスしてクローラ用トークンで認証）、radar：公開ページ
+  "workers_dev": false,
+  "preview_urls": false,
   "routes": [
     { "pattern": "reader.wagaya.org", "custom_domain": true },
     { "pattern": "radar.wagaya.org", "custom_domain": true }
