@@ -729,9 +729,29 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
           </a>
         ) : null}
       </div>
-      <p className="small muted">
-        公開ページは Cloudflare Access の保護対象外にする必要があります（Zero Trust のアプリケーションで、パス <span className="mono">p</span> を Bypass に設定）。
-      </p>
+      {url && !set.is_public && set.public_preview_token && (
+        <div className="preview-url small">
+          <div>
+            <b>プレビュー用 URL</b>（非公開のまま、この URL を知っている人だけが見られます）
+          </div>
+          <div className="row">
+            <input type="text" readOnly className="mono" value={`${url}?token=${set.public_preview_token}`} onFocus={(e) => e.currentTarget.select()} />
+            <a href={`${url}?token=${set.public_preview_token}`} target="_blank" rel="noopener noreferrer">
+              開く ↗
+            </a>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!confirm("プレビュー用 URL を発行し直しますか？ 今の URL は使えなくなります。")) return;
+                await api(`/sets/${set.id}/publish/preview-token`, { method: "POST" });
+                void reload();
+              }}
+            >
+              発行し直す
+            </button>
+          </div>
+        </div>
+      )}
     </form>
   );
 }

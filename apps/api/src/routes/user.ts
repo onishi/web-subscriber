@@ -747,8 +747,25 @@ userApi.put("/sets/:id/publish", async (c) => {
     period: o.period && keys.get(o.period.start)?.type === "date" && keys.get(o.period.end)?.type === "date" ? { start: o.period.start, end: o.period.end } : null,
     facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
   };
-  await c.env.DB.prepare("UPDATE sets SET is_public = ?, public_slug = ?, public_title = ?, public_description = ?, public_options_json = ?, updated_at = ? WHERE id = ?")
-    .bind(b.is_public ? 1 : 0, slug || null, (b.title ?? "").trim().slice(0, 80) || null, (b.description ?? "").trim().slice(0, 400) || null, JSON.stringify(opts), nowIso(), id)
+  // プレビュー用トークンは URL を決めたときに一度だけ発行する（再発行は別 API）
+  await c.env.DB.prepare(
+    "UPDATE sets SET is_public = ?, public_slug = ?, public_title = ?, public_description = ?, public_options_json = ?, public_preview_token = COALESCE(public_preview_token, ?), updated_at = ? WHERE id = ?",
+  )
+    .bind(b.is_public ? 1 : 0, slug || null, (b.title ?? "").trim().slice(0, 80) || null, (b.description ?? "").trim().slice(0, 400) || null, JSON.stringify(opts), slug ? previewToken() : null, nowIso(), id)
     .run();
-  return c.json({ ok: true, path: slug ? `/p/${slug}` : null });
+  return c.json({ ok: true });
 });
+
+/** プレビュー用トークンを発行し直す（以前の URL は使えなくなる） */
+userApi.post("/sets/:id/publish/preview-token", async (c) => {
+  const id = c.req.param("id");
+  const token = previewToken();
+  const r = await c.env.DB.prepare("UPDATE sets SET public_preview_token = ?, updated_at = ? WHERE id = ?").bind(token, nowIso(), id).run();
+  if (!r.meta.changes) return c.json({ error: "not_found" }, 404);
+  return c.json({ token });
+});
+
+function previewToken(): string {
+  const b = crypto.getRandomValues(new Uint8Array(18));
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}

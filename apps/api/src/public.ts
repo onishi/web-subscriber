@@ -87,8 +87,12 @@ publicPages.get("/", async (c) => {
 
 publicPages.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
-  const st = await c.env.DB.prepare("SELECT * FROM sets WHERE public_slug = ? AND is_public = 1").bind(slug).first<Record<string, string | number | null>>();
+  const st = await c.env.DB.prepare("SELECT * FROM sets WHERE public_slug = ?").bind(slug).first<Record<string, string | number | null>>();
   if (!st) return c.html(notFound(), 404);
+  // 非公開のセットは、?token= がプレビュー用トークンと一致するときだけ見せる
+  const token = c.req.query("token") ?? "";
+  const preview = !st.is_public;
+  if (preview && !(typeof st.public_preview_token === "string" && token && safeEqual(token, st.public_preview_token))) return c.html(notFound(), 404);
   const opts = json<PublicOptions>(st.public_options_json as string | null, {});
   const fields = await loadFields(c.env, st.id as string);
   const byKey = new Map(fields.map((f) => [f.key, f]));
@@ -176,7 +180,7 @@ publicPages.get("/:slug", async (c) => {
   const description = (st.public_description as string) || "";
   const q = (o: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
-    const all = { tab: period ? tab : undefined, v: facetValue || undefined, ...o };
+    const all = { token: preview ? token : undefined, tab: period ? tab : undefined, v: facetValue || undefined, ...o };
     for (const [k, val] of Object.entries(all)) if (val !== undefined && val !== "" && !(k === "page" && String(val) === "1")) p.set(k, String(val));
     const s = p.toString();
     return s ? `?${s}` : "?";
@@ -210,11 +214,18 @@ publicPages.get("/:slug", async (c) => {
   };
 
   c.header("Cache-Control", "public, max-age=300");
+  if (preview) {
+    // トークンが外部サイトへの Referer や共有キャッシュに漏れないように
+    c.header("Cache-Control", "private, no-store");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("X-Robots-Tag", "noindex, nofollow");
+  }
   return c.html(
     layout(
       title,
       description,
       html`
+        ${preview ? html`<div class="preview-bar">プレビュー：このページは非公開です。この URL を知っている人だけが見られます。</div>` : ""}
         <header class="hero">
           <div class="wrap">
             <a class="brand" href="./">radar</a>
@@ -260,6 +271,13 @@ publicPages.get("/:slug", async (c) => {
   );
 });
 
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
 export function notFound(): H {
   return layout("ページが見つかりません", "", html`<main class="wrap"><p class="empty">このページは公開されていないか、存在しません。</p></main>`);
 }
@@ -296,6 +314,7 @@ a { color: inherit; }
 .hero h1, .entry-title { word-break: auto-phrase; }
 .hero h1 { font-family: "Hiragino Mincho ProN", "Noto Serif JP", serif; font-weight: 600; font-size: clamp(28px, 5vw, 40px); line-height: 1.3; margin: 0 0 12px; letter-spacing: .02em; }
 .brand { display: inline-block; margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; color: var(--accent); text-decoration: none; font-weight: 600; }
+.preview-bar { background: var(--accent); color: var(--bg); text-align: center; font-size: 13px; padding: 6px 16px; }
 .lead { margin: 0 0 12px; font-size: 17px; }
 .meta { margin: 0; color: var(--muted); font-size: 13px; }
 .tabs { display: flex; gap: 4px; margin: 24px 0 8px; border-bottom: 1px solid var(--line); }

@@ -126,3 +126,5 @@ button.link { background: none; border: none; padding: 0 4px; margin-left: 6px; 
 button.link:hover { text-decoration: underline; }
 .display-title h2 { margin-bottom: 2px; }
 .display-title-form input { min-width: 260px; font-size: 16px; }
+.preview-url { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 6px; }
+.preview-url input { flex: 1; min-width: 0; }
