@@ -6,17 +6,61 @@ import type { HtmlEscapedString } from "hono/utils/html";
 import { type Env, json } from "./env.js";
 import { displayValue, loadFields, type SetField } from "./fields.js";
 
+export type PublicLayout = "list" | "cards" | "compact" | "table";
+export type PublicTab = "now" | "upcoming" | "all";
+/** 並べ替えのキー：published（日付）/ first_seen（収集日）/ title / f:<フィールドのキー> */
+export interface PublicSort {
+  key: string;
+  dir: "asc" | "desc";
+}
 export interface PublicOptions {
-  /** 表示するカスタムフィールドのキー（期間に使うキーは期間としてまとめて表示） */
+  /** 表示するカスタムフィールドのキー（この順で表示。期間に使うキーは期間としてまとめて表示） */
   fields?: string[];
   /** 期間（開始・終了の日付フィールド）。「開催中 / これから / すべて」のタブを出す */
   period?: { start: string; end: string } | null;
   /** 絞り込みチップに使う複数値（または テキスト）フィールド */
   facet?: string | null;
+  layout?: PublicLayout;
+  /** 標準項目の表示（未指定は表示） */
+  show?: { date?: boolean; source?: boolean; period?: boolean; excerpt?: boolean; image?: boolean };
+  excerpt_length?: number;
+  per_page?: number;
+  /** タブごとの並び順（期間を使わないときは all だけを使う） */
+  sort?: Partial<Record<PublicTab, PublicSort>>;
+  default_tab?: PublicTab;
 }
 
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
-const PER_PAGE = 30;
+export const LAYOUTS: PublicLayout[] = ["list", "cards", "compact", "table"];
+const TABS: PublicTab[] = ["now", "upcoming", "all"];
+const DEFAULT_SORT: Record<PublicTab, PublicSort> = { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" } };
+const clampInt = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d);
+
+/** 保存時・表示時の両方で使う。存在しないフィールドや不正な値は捨てて既定値に寄せる */
+export function normalizePublicOptions(o: PublicOptions | null | undefined, fields: SetField[]): Required<Omit<PublicOptions, "period" | "facet">> & Pick<PublicOptions, "period" | "facet"> {
+  o = o ?? {};
+  const keys = new Map(fields.map((f) => [f.key, f]));
+  const period = o.period && keys.get(o.period.start)?.type === "date" && keys.get(o.period.end)?.type === "date" ? { start: o.period.start, end: o.period.end } : null;
+  const sortKeyOk = (k: unknown) =>
+    typeof k === "string" && (["published", "first_seen", "title"].includes(k) || (period && (k === "period_start" || k === "period_end")) || (k.startsWith("f:") && keys.has(k.slice(2))));
+  const sort: Partial<Record<PublicTab, PublicSort>> = {};
+  for (const t of period ? TABS : (["all"] as PublicTab[])) {
+    const x = o.sort?.[t];
+    sort[t] = x && sortKeyOk(x.key) ? { key: x.key, dir: x.dir === "asc" ? "asc" : "desc" } : t === "all" || period ? DEFAULT_SORT[t] : DEFAULT_SORT.all;
+  }
+  const show = o.show ?? {};
+  return {
+    fields: [...new Set((o.fields ?? []).filter((k) => keys.has(k)))],
+    period,
+    facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
+    layout: LAYOUTS.includes(o.layout as PublicLayout) ? (o.layout as PublicLayout) : "list",
+    show: { date: show.date !== false, source: show.source !== false, period: show.period !== false, excerpt: show.excerpt !== false, image: show.image !== false },
+    excerpt_length: clampInt(o.excerpt_length, 20, 400, 140),
+    per_page: clampInt(o.per_page, 10, 100, 30),
+    sort,
+    default_tab: period && TABS.includes(o.default_tab as PublicTab) ? (o.default_tab as PublicTab) : "now",
+  };
+}
 
 type H = HtmlEscapedString | Promise<HtmlEscapedString>;
 
@@ -93,35 +137,53 @@ publicPages.get("/:slug", async (c) => {
   const token = c.req.query("token") ?? "";
   const preview = !st.is_public;
   if (preview && !(typeof st.public_preview_token === "string" && token && safeEqual(token, st.public_preview_token))) return c.html(notFound(), 404);
-  const opts = json<PublicOptions>(st.public_options_json as string | null, {});
   const fields = await loadFields(c.env, st.id as string);
+  const opts = normalizePublicOptions(json<PublicOptions>(st.public_options_json as string | null, {}), fields);
+  const PER_PAGE = opts.per_page;
+  const show = opts.show;
+  const kind = opts.layout;
   const byKey = new Map(fields.map((f) => [f.key, f]));
   const period = opts.period && byKey.get(opts.period.start)?.type === "date" && byKey.get(opts.period.end)?.type === "date" ? { start: byKey.get(opts.period.start)!, end: byKey.get(opts.period.end)! } : null;
   const facet = opts.facet ? byKey.get(opts.facet) ?? null : null;
   const shown = (opts.fields ?? []).map((k) => byKey.get(k)).filter((f): f is SetField => !!f && f.id !== period?.start.id && f.id !== period?.end.id);
 
   const today = jstToday();
-  const tab = period ? (["now", "upcoming", "all"].includes(c.req.query("tab") ?? "") ? c.req.query("tab")! : "now") : "all";
+  const tab: PublicTab = period ? (TABS.includes(c.req.query("tab") as PublicTab) ? (c.req.query("tab") as PublicTab) : opts.default_tab) : "all";
   const facetValue = facet ? c.req.query("v") ?? "" : "";
   const page = Math.max(1, Math.min(100, Number(c.req.query("page") ?? 1) || 1));
 
   const where = ["i.subscription_id IN (SELECT m.subscription_id FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id WHERE m.set_id = ? AND s.status != 'archived')", "(i.title_text IS NOT NULL OR i.primary_link IS NOT NULL)"];
   const args: unknown[] = [st.id];
-  const v = (f: SetField, agg: "MIN" | "MAX") => `(SELECT ${agg}(value_date) FROM item_field_values WHERE item_id = i.id AND field_id = '${f.id.replace(/'/g, "")}')`;
-  let order = "COALESCE(i.published_sort, i.first_seen_at) DESC, i.id DESC";
+  const col = (f: SetField) => (f.type === "date" ? "value_date" : f.type === "number" || f.type === "boolean" ? "value_num" : "value_text");
+  const v = (f: SetField, agg: "MIN" | "MAX") => `(SELECT ${agg}(${col(f)}) FROM item_field_values WHERE item_id = i.id AND field_id = '${f.id.replace(/[^0-9A-Za-z]/g, "")}')`;
   if (period) {
     const s = v(period.start, "MIN");
     const e = v(period.end, "MAX");
     if (tab === "now") {
       where.push(`${s} <= ? AND COALESCE(${e}, ${s}) >= ?`);
       args.push(today, today);
-      order = `COALESCE(${e}, '9999') ASC, ${s} DESC`; // 終了が近い順
     } else if (tab === "upcoming") {
       where.push(`${s} > ?`);
       args.push(today);
-      order = `${s} ASC`; // 始まりが近い順
     }
   }
+  // 並び順：値のないものは常に後ろ
+  const sort = opts.sort[tab] ?? DEFAULT_SORT.all;
+  const dir = sort.dir === "asc" ? "ASC" : "DESC";
+  const agg = sort.dir === "asc" ? "MIN" : "MAX";
+  const sortExpr =
+    sort.key === "title"
+      ? "TRIM(i.title_text, char(32, 9, 10, 13, 12288))"
+      : sort.key === "first_seen"
+        ? "i.first_seen_at"
+        : sort.key === "period_start" && period
+          ? v(period.start, "MIN")
+          : sort.key === "period_end" && period
+            ? `COALESCE(${v(period.end, "MAX")}, ${v(period.start, "MIN")})`
+            : sort.key.startsWith("f:") && byKey.has(sort.key.slice(2))
+              ? v(byKey.get(sort.key.slice(2))!, agg)
+              : "COALESCE(i.published_sort, i.first_seen_at)";
+  const order = `(${sortExpr}) IS NULL, ${sortExpr} ${dir}, COALESCE(i.published_sort, i.first_seen_at) DESC, i.id DESC`;
   if (facet && facetValue) {
     where.push("EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND fv.value_text = ?)");
     args.push(facet.id, facetValue);
@@ -187,31 +249,94 @@ publicPages.get("/:slug", async (c) => {
   };
   const fmtVal = (f: SetField, vals: unknown[]) => vals.map((x) => (f.type === "date" ? fmtDate(String(x)) : f.type === "boolean" ? (x ? "はい" : "いいえ") : String(x))).join("・");
 
-  const entry = (it: (typeof items)[number]) => {
+  const view = (it: (typeof items)[number]) => {
     const s = src.get(it.subscription_id);
-    const link = safeUrl(it.primary_link);
-    const img = safeUrl(it.image);
     const vals = values.get(it.id);
     const ps = period && vals?.get(period.start.key)?.[0];
     const pe = period && vals?.get(period.end.key)?.[0];
     const date = it.published ?? it.first_seen_at;
-    const body = html`
-      <div class="entry-body">
-        <div class="entry-meta">
-          ${period ? "" : html`<time datetime="${date.slice(0, 10)}">${fmtDate(date)}</time>`}
-          ${s ? html`<span class="source">${safeUrl(s.logo) ? html`<img src="${safeUrl(s.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ""}${s.title}</span>` : ""}
-        </div>
-        <h2 class="entry-title">${it.title_text ?? it.primary_link}</h2>
-        ${ps || pe ? html`<p class="period">${fmtDate(String(ps ?? ""))}${pe && pe !== ps ? html` – ${fmtDate(String(pe))}` : ""}</p>` : ""}
-        ${excerpt(it.summary) ? html`<p class="excerpt">${excerpt(it.summary)}</p>` : ""}
-        ${shown.some((f) => vals?.get(f.key)?.length)
-          ? html`<dl class="fields">${shown.filter((f) => vals?.get(f.key)?.length).map((f) => html`<div><dt>${f.label}</dt><dd>${fmtVal(f, vals!.get(f.key)!)}</dd></div>`)}</dl>`
-          : ""}
-      </div>
-      ${img ? html`<img class="thumb" src="${img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
-    `;
-    return html`<li class="entry">${link ? html`<a class="entry-link" href="${link}" target="_blank" rel="noopener">${body}</a>` : html`<div class="entry-link">${body}</div>`}</li>`;
+    return {
+      s,
+      link: safeUrl(it.primary_link),
+      img: show.image ? safeUrl(it.image) : null,
+      title: it.title_text ?? it.primary_link,
+      vals,
+      dateEl: show.date ? html`<time datetime="${date.slice(0, 10)}">${fmtDate(date)}</time>` : "",
+      sourceEl: show.source && s ? html`<span class="source">${safeUrl(s.logo) ? html`<img src="${safeUrl(s.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ""}${s.title}</span>` : "",
+      periodText: show.period && (ps || pe) ? `${fmtDate(String(ps ?? ""))}${pe && pe !== ps ? ` – ${fmtDate(String(pe))}` : ""}` : "",
+      ex: show.excerpt ? excerpt(it.summary, opts.excerpt_length) : null,
+    };
   };
+  const fieldsEl = (vals: Map<string, unknown[]> | undefined) =>
+    shown.some((f) => vals?.get(f.key)?.length)
+      ? html`<dl class="fields">${shown.filter((f) => vals?.get(f.key)?.length).map((f) => html`<div><dt>${f.label}</dt><dd>${fmtVal(f, vals!.get(f.key)!)}</dd></div>`)}</dl>`
+      : "";
+  const wrapLink = (link: string | null, cls: string, body: H) =>
+    link ? html`<a class="${cls}" href="${link}" target="_blank" rel="noopener">${body}</a>` : html`<div class="${cls}">${body}</div>`;
+
+  const entry = (it: (typeof items)[number]) => {
+    const x = view(it);
+    if (kind === "compact") {
+      return html`<li class="row-item">${wrapLink(
+        x.link,
+        "row-link",
+        html`<span class="row-date">${x.periodText || x.dateEl}</span><span class="row-title">${x.title}</span>${x.sourceEl ? html`<span class="row-source">${x.sourceEl}</span>` : ""}`,
+      )}</li>`;
+    }
+    if (kind === "cards") {
+      return html`<li class="card">${wrapLink(
+        x.link,
+        "card-link",
+        html`${x.img ? html`<img class="card-img" src="${x.img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+          <div class="card-body">
+            ${x.dateEl || x.sourceEl ? html`<div class="entry-meta">${x.dateEl}${x.sourceEl}</div>` : ""}
+            <h2 class="entry-title">${x.title}</h2>
+            ${x.periodText ? html`<p class="period">${x.periodText}</p>` : ""}
+            ${x.ex ? html`<p class="excerpt">${x.ex}</p>` : ""}
+            ${fieldsEl(x.vals)}
+          </div>`,
+      )}</li>`;
+    }
+    return html`<li class="entry">${wrapLink(
+      x.link,
+      "entry-link",
+      html`<div class="entry-body">
+          ${x.dateEl || x.sourceEl ? html`<div class="entry-meta">${x.dateEl}${x.sourceEl}</div>` : ""}
+          <h2 class="entry-title">${x.title}</h2>
+          ${x.periodText ? html`<p class="period">${x.periodText}</p>` : ""}
+          ${x.ex ? html`<p class="excerpt">${x.ex}</p>` : ""}
+          ${fieldsEl(x.vals)}
+        </div>
+        ${x.img ? html`<img class="thumb" src="${x.img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}`,
+    )}</li>`;
+  };
+
+  const table = () => html`<div class="table-wrap">
+    <table class="entries-table">
+      <thead>
+        <tr>
+          ${show.period && period ? html`<th>期間</th>` : show.date ? html`<th>日付</th>` : ""}
+          <th>タイトル</th>
+          ${shown.map((f) => html`<th>${f.label}</th>`)}
+          ${show.source ? html`<th>情報源</th>` : ""}
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map((it) => {
+          const x = view(it);
+          return html`<tr>
+            ${show.period && period ? html`<td class="nowrap">${x.periodText || x.dateEl}</td>` : show.date ? html`<td class="nowrap">${x.dateEl}</td>` : ""}
+            <td class="t-title">${x.link ? html`<a href="${x.link}" target="_blank" rel="noopener">${x.title}</a>` : x.title}</td>
+            ${shown.map((f) => html`<td>${x.vals?.get(f.key)?.length ? fmtVal(f, x.vals.get(f.key)!) : ""}</td>`)}
+            ${show.source ? html`<td>${x.sourceEl}</td>` : ""}
+          </tr>`;
+        })}
+      </tbody>
+    </table>
+  </div>`;
+
+  const listEl = () =>
+    kind === "table" ? table() : kind === "cards" ? html`<ol class="cards">${items.map(entry)}</ol>` : kind === "compact" ? html`<ol class="rows${show.period && period ? " has-period" : ""}">${items.map(entry)}</ol>` : html`<ol class="entries">${items.map(entry)}</ol>`;
 
   c.header("Cache-Control", "public, max-age=300");
   if (preview) {
@@ -250,7 +375,7 @@ publicPages.get("/:slug", async (c) => {
                 ${chips.map((ch) => html`<a href="${q({ v: ch.value, page: 1 })}" class="${facetValue === ch.value ? "on" : ""}">${ch.value}<span>${ch.count}</span></a>`)}
               </nav>`
             : ""}
-          ${items.length ? html`<ol class="entries">${items.map(entry)}</ol>` : html`<p class="empty">${tab === "now" ? "現在開催中の情報はありません。" : tab === "upcoming" ? "予定されている情報はありません。" : "まだ情報がありません。"}</p>`}
+          ${items.length ? listEl() : html`<p class="empty">${tab === "now" ? "現在開催中の情報はありません。" : tab === "upcoming" ? "予定されている情報はありません。" : "まだ情報がありません。"}</p>`}
           ${page > 1 || rs.results.length > PER_PAGE
             ? html`<nav class="pager">
                 ${page > 1 ? html`<a href="${q({ page: page - 1 })}">← 前へ</a>` : html`<span></span>`}
@@ -348,7 +473,36 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .sources { margin: 48px 0 40px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .sources h3 { font-size: 13px; margin: 0 0 6px; }
 .sources ul { margin: 0 0 12px; padding-left: 18px; }
+.cards { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px; }
+.card-link { display: flex; flex-direction: column; height: 100%; text-decoration: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+a.card-link:hover .entry-title { color: var(--accent); }
+.card-img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; background: var(--line); }
+.card-body { padding: 14px 16px 16px; }
+.card .entry-title { font-size: 17px; }
+.rows { list-style: none; margin: 12px 0 0; padding: 0; }
+.row-item { border-bottom: 1px solid var(--line); }
+.row-link { display: flex; gap: 14px; align-items: baseline; padding: 10px 0; text-decoration: none; }
+a.row-link:hover .row-title { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.row-date { flex-shrink: 0; min-width: 6.5em; font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
+.row-date time { color: inherit; }
+.rows.has-period .row-date { min-width: 13.2em; }
+.row-title { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.row-source { flex-shrink: 0; font-size: 12px; color: var(--muted); max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-wrap { overflow-x: auto; margin: 16px 0 0; }
+.entries-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.entries-table th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 2px solid var(--line); white-space: nowrap; }
+.entries-table td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.entries-table .t-title { font-weight: 600; min-width: 16em; }
+.entries-table .t-title a { text-decoration: none; }
+.entries-table .t-title a:hover { color: var(--accent); text-decoration: underline; }
+.entries-table .nowrap { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--accent); }
+.entries-table time { color: inherit; }
 @media (max-width: 600px) {
+  .row-link { flex-wrap: wrap; gap: 2px 10px; }
+  .row-title { flex-basis: 100%; order: 2; }
+  .row-source { max-width: none; }
+  .rows.has-period .row-date { min-width: 0; }
+  .entries-table .t-title { min-width: 12em; }
   .hero { padding: 32px 0 20px; }
   .entry-link { gap: 12px; padding: 18px 0; }
   .thumb { width: 96px; }

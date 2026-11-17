@@ -128,3 +128,25 @@ button.link:hover { text-decoration: underline; }
 .display-title-form input { min-width: 260px; font-size: 16px; }
 .preview-url { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 6px; }
 .preview-url input { flex: 1; min-width: 0; }
+.field-order { list-style: none; margin: 0 0 4px; padding: 0; }
+.field-order li { gap: 4px; }
+.layout-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.layout-choice { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.layout-choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.layout-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.layout-thumb { display: grid; gap: 3px; height: 44px; padding: 4px; border-radius: 4px; background: var(--line); }
+.layout-thumb i { display: block; background: var(--panel); border-radius: 2px; }
+.layout-list { grid-template-rows: repeat(3, 1fr); }
+.layout-list i { border-right: 14px solid var(--muted); opacity: .9; }
+.layout-cards { grid-template-columns: repeat(3, 1fr); }
+.layout-cards i { border-top: 16px solid var(--muted); }
+.layout-compact { grid-template-rows: repeat(3, 1fr); }
+.layout-compact i { height: 4px; align-self: center; }
+.layout-table { grid-template-rows: repeat(3, 1fr); }
+.layout-table i { background: linear-gradient(90deg, var(--panel) 0 30%, var(--line) 30% 31%, var(--panel) 31% 65%, var(--line) 65% 66%, var(--panel) 66%); }
+.sort-rows { display: flex; flex-direction: column; gap: 6px; }
+.sort-tab { min-width: 5em; }
+.publish-form textarea { min-height: 0; font-family: inherit; font-size: 13px; }
+.publish-form .row > select, .publish-form .row > input[type=text] { width: auto; flex: 1 1 180px; min-width: 0; }
+.publish-form .sort-rows .row > select { flex: 0 1 auto; }
+.publish-form .row > input[type=number] { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; }

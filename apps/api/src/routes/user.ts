@@ -5,7 +5,7 @@ import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt } from "../env
 import { type AppVars } from "../auth.js";
 import { enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
 import { startSession } from "../ai/setup.js";
-import { SLUG_RE, type PublicOptions } from "../public.js";
+import { normalizePublicOptions, SLUG_RE, type PublicOptions } from "../public.js";
 import { FIELD_KEY_RE, FIELD_TYPES, buildFieldQuery, displayValue, loadFields, processFieldExtractions, refreshFieldsHash, setManualValues, revertManualValues, type FieldType, type SetField } from "../fields.js";
 
 export const userApi = new Hono<{ Bindings: Env; Variables: AppVars }>();
@@ -739,14 +739,8 @@ userApi.put("/sets/:id/publish", async (c) => {
   if (b.is_public && !slug) return c.json({ error: "slug_required" }, 400);
   if (slug && !SLUG_RE.test(slug)) return c.json({ error: "bad_slug" }, 400);
   if (slug && (await c.env.DB.prepare("SELECT 1 FROM sets WHERE public_slug = ? AND id != ?").bind(slug, id).first())) return c.json({ error: "slug_taken" }, 409);
-  const fields = await loadFields(c.env, id);
-  const keys = new Map(fields.map((f) => [f.key, f]));
-  const o = b.options ?? {};
-  const opts: PublicOptions = {
-    fields: (o.fields ?? []).filter((k) => keys.has(k)),
-    period: o.period && keys.get(o.period.start)?.type === "date" && keys.get(o.period.end)?.type === "date" ? { start: o.period.start, end: o.period.end } : null,
-    facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
-  };
+  const opts = normalizePublicOptions(b.options, await loadFields(c.env, id));
+
   // プレビュー用トークンは URL を決めたときに一度だけ発行する（再発行は別 API）
   await c.env.DB.prepare(
     "UPDATE sets SET is_public = ?, public_slug = ?, public_title = ?, public_description = ?, public_options_json = ?, public_preview_token = COALESCE(public_preview_token, ?), updated_at = ? WHERE id = ?",
