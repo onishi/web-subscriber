@@ -508,7 +508,8 @@ userApi.get("/sets/:id", async (c) => {
   )
     .bind(st.fields_hash ?? "", st.fields_hash ?? "", st.id)
     .first<{ total: number; done: number; errors: number }>();
-  return c.json({ set: st, members: members.results, fields, extraction: { total: status?.total ?? 0, done: status?.done ?? 0, errors: status?.errors ?? 0, ai: !!c.env.GEMINI_API_KEY } });
+  const public_base_url = c.env.PUBLIC_HOST ? `https://${c.env.PUBLIC_HOST}/` : `${new URL(c.req.url).origin}/p/`;
+  return c.json({ set: { ...st, public_base_url }, members: members.results, fields, extraction: { total: status?.total ?? 0, done: status?.done ?? 0, errors: status?.errors ?? 0, ai: !!c.env.GEMINI_API_KEY } });
 });
 
 userApi.patch("/sets/:id", async (c) => {

@@ -12,6 +12,8 @@ export interface Env {
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   DEV_AUTH_BYPASS: string;
+  /** 公開ページ専用のホスト名（例 radar.wagaya.org）。このホストでは公開ページだけを返す */
+  PUBLIC_HOST?: string;
   GEMINI_API_KEY?: string;
   /** テスト用：Gemini API の代わりにモックへ向ける */
   GEMINI_BASE_URL?: string;

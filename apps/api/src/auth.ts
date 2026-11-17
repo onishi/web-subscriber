@@ -20,7 +20,7 @@ export async function userAuth(c: C, next: Next) {
   let jwks = jwksCache.get(team);
   if (!jwks) jwksCache.set(team, (jwks = createRemoteJWKSet(new URL(`${team}/cdn-cgi/access/certs`))));
   try {
-    const { payload } = await jwtVerify(token, jwks, { issuer: team, audience: c.env.ACCESS_AUD });
+    const { payload } = await jwtVerify(token, jwks, { issuer: team, audience: c.env.ACCESS_AUD.split(",").map((a) => a.trim()).filter(Boolean) });
     c.set("userId", String(payload.email ?? payload.sub));
   } catch {
     return c.json({ error: "unauthorized" }, 401);

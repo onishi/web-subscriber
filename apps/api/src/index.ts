@@ -7,7 +7,7 @@ import { tick } from "./jobs.js";
 import { finalizeExpiredRun } from "./ingest.js";
 import { completeHooks, markProbeFailed } from "./hooks.js";
 import { processFieldExtractions } from "./fields.js";
-import { publicPages } from "./public.js";
+import { notFound, publicPages } from "./public.js";
 
 export { SetupWorkflow } from "./ai/setup.js";
 
@@ -17,7 +17,12 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 app.use("/api/v1/*", userAuth);
 app.route("/api/v1", userApi);
 app.route("/worker/v1", workerApi);
-// セットの公開ページ（認証なし。Cloudflare Access では /p をバイパスにする）
+// セットの公開ページ。本番は PUBLIC_HOST へ転送し、PUBLIC_HOST 未設定（開発時）はここで返す
+app.all("/p/*", async (c, next) => {
+  if (!c.env.PUBLIC_HOST) return next();
+  const u = new URL(c.req.url);
+  return c.redirect(`https://${c.env.PUBLIC_HOST}${u.pathname.slice(2)}${u.search}`, 301);
+});
 app.route("/p", publicPages);
 
 /** 開発用：Cron を手動で起動（DEV_AUTH_BYPASS=1 のときのみ） */
@@ -27,6 +32,12 @@ app.post("/api/dev/tick", async (c) => {
 });
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
+
+/** 公開ページ専用ホスト（radar）：公開ページ以外は返さない */
+const radar = new Hono<{ Bindings: Env }>();
+radar.get("/robots.txt", (c) => c.text("User-agent: *\nAllow: /\n"));
+radar.route("/", publicPages);
+radar.all("*", (c) => c.html(notFound(), 404));
 
 async function runTick(env: Env) {
   const hooks = completeHooks(env);
@@ -41,7 +52,10 @@ async function runTick(env: Env) {
 }
 
 export default {
-  fetch: app.fetch,
+  fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    if (env.PUBLIC_HOST && new URL(req.url).hostname === env.PUBLIC_HOST) return radar.fetch(req, env, ctx);
+    return app.fetch(req, env, ctx);
+  },
   async scheduled(_ev: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(runTick(env));
   },

@@ -8,8 +8,15 @@
     "directory": "../web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/worker/*", "/p/*"]
+    // radar ホストでは公開ページを返すため、ビルド済みアセット以外は Worker が先に受ける
+    "run_worker_first": ["/*", "!/assets/*"]
   },
+  // reader：管理画面（Cloudflare Access で保護）、radar：公開ページ。workers.dev はクローラの API 用に残す
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "reader.wagaya.org", "custom_domain": true },
+    { "pattern": "radar.wagaya.org", "custom_domain": true }
+  ],
   "d1_databases": [{ "binding": "DB", "database_name": "web-subscriber-db", "database_id": "9df90e71-a98f-43a3-84f1-1a108318e3f3", "migrations_dir": "migrations" }],
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "web-subscriber-blobs" }],
   "workflows": [{ "name": "ws-setup", "binding": "SETUP_WORKFLOW", "class_name": "SetupWorkflow" }],
@@ -20,6 +27,7 @@
     "REPAIR_AFTER_FAILURES": "2",
     "ACCESS_TEAM_DOMAIN": "https://cinema-timetable.cloudflareaccess.com",
     "ACCESS_AUD": "fcad61fafeac4321063a1f5e93d4ccafb49f95c9016bd4bf7e95b7c10ed4210d",
-    "DEV_AUTH_BYPASS": "0"
+    "DEV_AUTH_BYPASS": "0",
+    "PUBLIC_HOST": "radar.wagaya.org"
   }
 }

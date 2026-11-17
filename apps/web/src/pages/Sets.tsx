@@ -599,7 +599,7 @@ const PUBLISH_ERROR: Record<string, string> = {
   slug_taken: "この URL は別のセットで使われています",
 };
 
-/** セットの公開ページ（/p/<slug>）の設定 */
+/** セットの公開ページ（radar.wagaya.org/<slug>）の設定 */
 function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; reload: () => Promise<unknown> }) {
   const opts = (() => {
     try {
@@ -622,7 +622,8 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
   });
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const url = set.public_slug ? `${location.origin}/p/${set.public_slug}` : null;
+  const base: string = set.public_base_url ?? `${location.origin}/p/`;
+  const url = set.public_slug ? `${base}${set.public_slug}` : null;
   return (
     <form
       className="panel publish-form"
@@ -657,7 +658,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
       <div className="kv small">
         <div>URL</div>
         <div className="row">
-          <span className="mono muted">{location.origin}/p/</span>
+          <span className="mono muted">{base}</span>
           <input type="text" className="mono" placeholder="kyoto-museums" value={form.slug} maxLength={64} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
         </div>
         <div>ページのタイトル</div>

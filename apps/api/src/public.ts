@@ -1,4 +1,4 @@
-// セットの公開ページ（認証なし）。/p/<slug>
+// セットの公開ページ（認証なし）。本番は PUBLIC_HOST（radar.wagaya.org）の /<slug>、開発時は /p/<slug>
 // フィードリーダーではなく「特定カテゴリの新着情報一覧」として、サーバー側で HTML を組み立てて返す。
 import { Hono } from "hono";
 import { html, raw } from "hono/html";
@@ -43,6 +43,47 @@ const fmtDate = (d: string | null | undefined) => (d ? d.slice(0, 10).replace(/-
 const fmtJst = (iso: string | null) => (iso ? new Date(Date.parse(iso) + 9 * 3600000).toISOString().slice(0, 16).replace("T", " ").replace(/-/g, ".") : "");
 
 export const publicPages = new Hono<{ Bindings: Env }>();
+
+publicPages.get("/", async (c) => {
+  const rs = await c.env.DB.prepare(
+    `SELECT st.public_slug AS slug, COALESCE(NULLIF(st.public_title, ''), st.name) AS title, st.public_description AS description,
+       (SELECT COUNT(*) FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id WHERE m.set_id = st.id AND s.status != 'archived') AS sources,
+       (SELECT MAX(s.last_success_at) FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id WHERE m.set_id = st.id AND s.status != 'archived') AS updated
+     FROM sets st WHERE st.is_public = 1 AND st.public_slug IS NOT NULL ORDER BY st.position, st.created_at`,
+  ).all<{ slug: string; title: string; description: string | null; sources: number; updated: string | null }>();
+  c.header("Cache-Control", "public, max-age=300");
+  return c.html(
+    layout(
+      "radar",
+      "いろいろなサイトの新着情報を、テーマごとに集めて一覧にしています。",
+      html`
+        <header class="hero">
+          <div class="wrap">
+            <h1>radar</h1>
+            <p class="lead">いろいろなサイトの新着情報を、テーマごとに集めて一覧にしています。</p>
+          </div>
+        </header>
+        <main class="wrap">
+          ${rs.results.length === 0
+            ? html`<p class="empty">公開中のページはまだありません。</p>`
+            : html`<ul class="entries">
+                ${rs.results.map(
+                  (r) => html`<li class="entry">
+                    <a class="entry-link" href="./${r.slug}">
+                      <div class="entry-body">
+                        <h2 class="entry-title">${r.title}</h2>
+                        ${r.description ? html`<p class="excerpt">${r.description}</p>` : ""}
+                        <div class="entry-meta">${r.sources} の情報源${r.updated ? html`・最終更新 ${fmtJst(r.updated)}` : ""}</div>
+                      </div>
+                    </a>
+                  </li>`,
+                )}
+              </ul>`}
+        </main>
+      `,
+    ),
+  );
+});
 
 publicPages.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
@@ -176,6 +217,7 @@ publicPages.get("/:slug", async (c) => {
       html`
         <header class="hero">
           <div class="wrap">
+            <a class="brand" href="./">radar</a>
             <h1>${title}</h1>
             ${description ? html`<p class="lead">${description}</p>` : ""}
             <p class="meta">${sources.results.length} の情報源から自動で収集${updated ? html`・最終更新 ${fmtJst(updated)}` : ""}</p>
@@ -218,7 +260,7 @@ publicPages.get("/:slug", async (c) => {
   );
 });
 
-function notFound(): H {
+export function notFound(): H {
   return layout("ページが見つかりません", "", html`<main class="wrap"><p class="empty">このページは公開されていないか、存在しません。</p></main>`);
 }
 
@@ -253,6 +295,7 @@ a { color: inherit; }
 .hero { border-bottom: 1px solid var(--line); padding: 48px 0 28px; }
 .hero h1, .entry-title { word-break: auto-phrase; }
 .hero h1 { font-family: "Hiragino Mincho ProN", "Noto Serif JP", serif; font-weight: 600; font-size: clamp(28px, 5vw, 40px); line-height: 1.3; margin: 0 0 12px; letter-spacing: .02em; }
+.brand { display: inline-block; margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; color: var(--accent); text-decoration: none; font-weight: 600; }
 .lead { margin: 0 0 12px; font-size: 17px; }
 .meta { margin: 0; color: var(--muted); font-size: 13px; }
 .tabs { display: flex; gap: 4px; margin: 24px 0 8px; border-bottom: 1px solid var(--line); }
