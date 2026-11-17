@@ -128,8 +128,12 @@ button.link:hover { text-decoration: underline; }
 .display-title-form input { min-width: 260px; font-size: 16px; }
 .preview-url { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 6px; }
 .preview-url input { flex: 1; min-width: 0; }
-.field-order { list-style: none; margin: 0 0 4px; padding: 0; }
-.field-order li { gap: 4px; }
+.display-order { list-style: none; margin: 0 0 6px; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
+.display-order li { gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--line); min-height: 34px; }
+.display-order li:last-child { border-bottom: none; }
+.display-order li.off { color: var(--muted); }
+.display-order .order-btns { margin-left: auto; display: inline-flex; }
+.display-order button.link:disabled { opacity: .3; }
 .layout-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .layout-choice { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .layout-choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }

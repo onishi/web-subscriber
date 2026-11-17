@@ -21,7 +21,12 @@ export interface PublicOptions {
   /** 絞り込みチップに使う複数値（または テキスト）フィールド */
   facet?: string | null;
   layout?: PublicLayout;
-  /** 標準項目の表示（未指定は表示） */
+  /**
+   * 表示する項目とその順番。date / source / title / period / excerpt / f:<フィールドのキー>。
+   * 未指定なら show と fields から組み立てる（以前の設定との互換）
+   */
+  display?: string[];
+  /** 標準項目の表示（未指定は表示）。display があるときは image だけを使う */
   show?: { date?: boolean; source?: boolean; period?: boolean; excerpt?: boolean; image?: boolean };
   excerpt_length?: number;
   per_page?: number;
@@ -49,12 +54,29 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     sort[t] = x && sortKeyOk(x.key) ? { key: x.key, dir: x.dir === "asc" ? "asc" : "desc" } : t === "all" || period ? DEFAULT_SORT[t] : DEFAULT_SORT.all;
   }
   const show = o.show ?? {};
+  const itemOk = (k: unknown): k is string =>
+    typeof k === "string" && (["date", "source", "title", "excerpt"].includes(k) || (k === "period" && !!period) || (k.startsWith("f:") && keys.has(k.slice(2))));
+  let display: string[];
+  if (Array.isArray(o.display)) display = [...new Set(o.display.filter(itemOk))];
+  else {
+    // 以前の設定（show + fields）から組み立てる
+    display = [
+      ...(show.date !== false ? ["date"] : []),
+      ...(show.source !== false ? ["source"] : []),
+      "title",
+      ...(period && show.period !== false ? ["period"] : []),
+      ...(show.excerpt !== false ? ["excerpt"] : []),
+      ...(o.fields ?? []).filter((k) => keys.has(k) && k !== period?.start && k !== period?.end).map((k) => `f:${k}`),
+    ];
+  }
+  if (!display.includes("title")) display.unshift("title"); // タイトルは必ず出す
   return {
-    fields: [...new Set((o.fields ?? []).filter((k) => keys.has(k)))],
+    display,
+    fields: display.filter((k) => k.startsWith("f:")).map((k) => k.slice(2)),
     period,
     facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
     layout: LAYOUTS.includes(o.layout as PublicLayout) ? (o.layout as PublicLayout) : "list",
-    show: { date: show.date !== false, source: show.source !== false, period: show.period !== false, excerpt: show.excerpt !== false, image: show.image !== false },
+    show: { date: display.includes("date"), source: display.includes("source"), period: display.includes("period"), excerpt: display.includes("excerpt"), image: show.image !== false },
     excerpt_length: clampInt(o.excerpt_length, 20, 400, 140),
     per_page: clampInt(o.per_page, 10, 100, 30),
     sort,
@@ -145,7 +167,7 @@ publicPages.get("/:slug", async (c) => {
   const byKey = new Map(fields.map((f) => [f.key, f]));
   const period = opts.period && byKey.get(opts.period.start)?.type === "date" && byKey.get(opts.period.end)?.type === "date" ? { start: byKey.get(opts.period.start)!, end: byKey.get(opts.period.end)! } : null;
   const facet = opts.facet ? byKey.get(opts.facet) ?? null : null;
-  const shown = (opts.fields ?? []).map((k) => byKey.get(k)).filter((f): f is SetField => !!f && f.id !== period?.start.id && f.id !== period?.end.id);
+  const shown = opts.fields.map((k) => byKey.get(k)).filter((f): f is SetField => !!f);
 
   const today = jstToday();
   const tab: PublicTab = period ? (TABS.includes(c.req.query("tab") as PublicTab) ? (c.req.query("tab") as PublicTab) : opts.default_tab) : "all";
@@ -267,68 +289,101 @@ publicPages.get("/:slug", async (c) => {
       ex: show.excerpt ? excerpt(it.summary, opts.excerpt_length) : null,
     };
   };
-  const fieldsEl = (vals: Map<string, unknown[]> | undefined) =>
-    shown.some((f) => vals?.get(f.key)?.length)
-      ? html`<dl class="fields">${shown.filter((f) => vals?.get(f.key)?.length).map((f) => html`<div><dt>${f.label}</dt><dd>${fmtVal(f, vals!.get(f.key)!)}</dd></div>`)}</dl>`
-      : "";
   const wrapLink = (link: string | null, cls: string, body: H) =>
     link ? html`<a class="${cls}" href="${link}" target="_blank" rel="noopener">${body}</a>` : html`<div class="${cls}">${body}</div>`;
+  const fieldOf = (k: string) => (k.startsWith("f:") ? byKey.get(k.slice(2)) ?? null : null);
+  const fieldText = (x: ReturnType<typeof view>, f: SetField) => (x.vals?.get(f.key)?.length ? fmtVal(f, x.vals.get(f.key)!) : "");
+
+  /** 設定の順に並べる。日付・情報源は続けて1行に、カスタムフィールドは続けて1つの一覧にまとめる */
+  const blocks = (x: ReturnType<typeof view>): H[] => {
+    const out: H[] = [];
+    let meta: H[] = [];
+    let dl: H[] = [];
+    const flush = () => {
+      if (meta.length) out.push(html`<div class="entry-meta">${meta}</div>`);
+      if (dl.length) out.push(html`<dl class="fields">${dl}</dl>`);
+      meta = [];
+      dl = [];
+    };
+    for (const k of opts.display) {
+      const f = fieldOf(k);
+      if (k === "date" || k === "source") {
+        if (dl.length) flush();
+        const el = k === "date" ? x.dateEl : x.sourceEl;
+        if (el) meta.push(el as H);
+        continue;
+      }
+      if (f) {
+        if (meta.length) flush();
+        const t = fieldText(x, f);
+        if (t) dl.push(html`<div><dt>${f.label}</dt><dd>${t}</dd></div>`);
+        continue;
+      }
+      flush();
+      if (k === "title") out.push(html`<h2 class="entry-title">${x.title}</h2>`);
+      else if (k === "period" && x.periodText) out.push(html`<p class="period">${x.periodText}</p>`);
+      else if (k === "excerpt" && x.ex) out.push(html`<p class="excerpt">${x.ex}</p>`);
+    }
+    flush();
+    return out;
+  };
 
   const entry = (it: (typeof items)[number]) => {
     const x = view(it);
     if (kind === "compact") {
-      return html`<li class="row-item">${wrapLink(
-        x.link,
-        "row-link",
-        html`<span class="row-date">${x.periodText || x.dateEl}</span><span class="row-title">${x.title}</span>${x.sourceEl ? html`<span class="row-source">${x.sourceEl}</span>` : ""}`,
-      )}</li>`;
+      const parts = opts.display.map((k) => {
+        const f = fieldOf(k);
+        if (f) {
+          const t = fieldText(x, f);
+          return t ? html`<span class="row-field">${t}</span>` : "";
+        }
+        if (k === "date") return html`<span class="row-date">${x.dateEl}</span>`;
+        if (k === "period") return html`<span class="row-date row-period">${x.periodText}</span>`;
+        if (k === "title") return html`<span class="row-title">${x.title}</span>`;
+        if (k === "source") return x.sourceEl ? html`<span class="row-source">${x.sourceEl}</span>` : "";
+        if (k === "excerpt") return x.ex ? html`<span class="row-excerpt">${x.ex}</span>` : "";
+        return "";
+      });
+      return html`<li class="row-item">${wrapLink(x.link, "row-link", html`${parts}`)}</li>`;
     }
     if (kind === "cards") {
       return html`<li class="card">${wrapLink(
         x.link,
         "card-link",
         html`${x.img ? html`<img class="card-img" src="${x.img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
-          <div class="card-body">
-            ${x.dateEl || x.sourceEl ? html`<div class="entry-meta">${x.dateEl}${x.sourceEl}</div>` : ""}
-            <h2 class="entry-title">${x.title}</h2>
-            ${x.periodText ? html`<p class="period">${x.periodText}</p>` : ""}
-            ${x.ex ? html`<p class="excerpt">${x.ex}</p>` : ""}
-            ${fieldsEl(x.vals)}
-          </div>`,
+          <div class="card-body">${blocks(x)}</div>`,
       )}</li>`;
     }
     return html`<li class="entry">${wrapLink(
       x.link,
       "entry-link",
-      html`<div class="entry-body">
-          ${x.dateEl || x.sourceEl ? html`<div class="entry-meta">${x.dateEl}${x.sourceEl}</div>` : ""}
-          <h2 class="entry-title">${x.title}</h2>
-          ${x.periodText ? html`<p class="period">${x.periodText}</p>` : ""}
-          ${x.ex ? html`<p class="excerpt">${x.ex}</p>` : ""}
-          ${fieldsEl(x.vals)}
-        </div>
+      html`<div class="entry-body">${blocks(x)}</div>
         ${x.img ? html`<img class="thumb" src="${x.img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}`,
     )}</li>`;
   };
 
+  const COL_LABEL: Record<string, string> = { date: "日付", source: "情報源", title: "タイトル", period: "期間", excerpt: "概要" };
   const table = () => html`<div class="table-wrap">
     <table class="entries-table">
       <thead>
         <tr>
-          ${show.period && period ? html`<th>期間</th>` : show.date ? html`<th>日付</th>` : ""}
-          <th>タイトル</th>
-          ${shown.map((f) => html`<th>${f.label}</th>`)}
-          ${show.source ? html`<th>情報源</th>` : ""}
+          ${opts.display.map((k) => html`<th>${fieldOf(k)?.label ?? COL_LABEL[k] ?? ""}</th>`)}
         </tr>
       </thead>
       <tbody>
         ${items.map((it) => {
           const x = view(it);
           return html`<tr>
-            ${show.period && period ? html`<td class="nowrap">${x.periodText || x.dateEl}</td>` : show.date ? html`<td class="nowrap">${x.dateEl}</td>` : ""}
-            <td class="t-title">${x.link ? html`<a href="${x.link}" target="_blank" rel="noopener">${x.title}</a>` : x.title}</td>
-            ${shown.map((f) => html`<td>${x.vals?.get(f.key)?.length ? fmtVal(f, x.vals.get(f.key)!) : ""}</td>`)}
-            ${show.source ? html`<td>${x.sourceEl}</td>` : ""}
+            ${opts.display.map((k) => {
+              const f = fieldOf(k);
+              if (f) return html`<td>${fieldText(x, f)}</td>`;
+              if (k === "date") return html`<td class="nowrap">${x.dateEl}</td>`;
+              if (k === "period") return html`<td class="nowrap">${x.periodText}</td>`;
+              if (k === "title") return html`<td class="t-title">${x.link ? html`<a href="${x.link}" target="_blank" rel="noopener">${x.title}</a>` : x.title}</td>`;
+              if (k === "source") return html`<td>${x.sourceEl}</td>`;
+              if (k === "excerpt") return html`<td class="t-excerpt">${x.ex ?? ""}</td>`;
+              return html`<td></td>`;
+            })}
           </tr>`;
         })}
       </tbody>
@@ -336,7 +391,7 @@ publicPages.get("/:slug", async (c) => {
   </div>`;
 
   const listEl = () =>
-    kind === "table" ? table() : kind === "cards" ? html`<ol class="cards">${items.map(entry)}</ol>` : kind === "compact" ? html`<ol class="rows${show.period && period ? " has-period" : ""}">${items.map(entry)}</ol>` : html`<ol class="entries">${items.map(entry)}</ol>`;
+    kind === "table" ? table() : kind === "cards" ? html`<ol class="cards">${items.map(entry)}</ol>` : kind === "compact" ? html`<ol class="rows">${items.map(entry)}</ol>` : html`<ol class="entries">${items.map(entry)}</ol>`;
 
   c.header("Cache-Control", "public, max-age=300");
   if (preview) {
@@ -485,7 +540,10 @@ a.card-link:hover .entry-title { color: var(--accent); }
 a.row-link:hover .row-title { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .row-date { flex-shrink: 0; min-width: 6.5em; font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
 .row-date time { color: inherit; }
-.rows.has-period .row-date { min-width: 13.2em; }
+.row-period { min-width: 13.2em; }
+.row-field, .row-excerpt { font-size: 12px; color: var(--muted); }
+.row-excerpt { flex: 1 1 12em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entries-table .t-excerpt { color: var(--muted); font-size: 13px; min-width: 16em; }
 .row-title { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 .row-source { flex-shrink: 0; font-size: 12px; color: var(--muted); max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-wrap { overflow-x: auto; margin: 16px 0 0; }
@@ -499,9 +557,9 @@ a.row-link:hover .row-title { color: var(--accent); text-decoration: underline; 
 .entries-table time { color: inherit; }
 @media (max-width: 600px) {
   .row-link { flex-wrap: wrap; gap: 2px 10px; }
-  .row-title { flex-basis: 100%; order: 2; }
+  .row-title { flex-basis: 100%; }
   .row-source { max-width: none; }
-  .rows.has-period .row-date { min-width: 0; }
+  .row-date, .row-period { min-width: 0; }
   .entries-table .t-title { min-width: 12em; }
   .hero { padding: 32px 0 20px; }
   .entry-link { gap: 12px; padding: 18px 0; }

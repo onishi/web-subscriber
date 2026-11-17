@@ -599,16 +599,8 @@ const PUBLISH_ERROR: Record<string, string> = {
   slug_taken: "この URL は別のセットで使われています",
 };
 
-type ShowKey = "date" | "source" | "period" | "excerpt" | "image";
 type SortTab = "now" | "upcoming" | "all";
 const TAB_LABEL: Record<SortTab, string> = { now: "開催中", upcoming: "これから", all: "すべて" };
-const SHOW_CHOICES: [ShowKey, string][] = [
-  ["date", "日付"],
-  ["source", "情報源"],
-  ["period", "期間"],
-  ["excerpt", "概要"],
-  ["image", "画像"],
-];
 const LAYOUT_CHOICES: [string, string, string][] = [
   ["list", "リスト", "1件ずつ横長に。概要と画像も読める"],
   ["cards", "カード", "画像を大きく、タイル状に並べる"],
@@ -632,12 +624,21 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     slug: set.public_slug ?? "",
     title: set.public_title ?? "",
     description: set.public_description ?? "",
-    fields: (opts.fields ?? []) as string[],
+    display: (Array.isArray(opts.display)
+      ? opts.display
+      : [
+          ...(opts.show?.date !== false ? ["date"] : []),
+          ...(opts.show?.source !== false ? ["source"] : []),
+          "title",
+          ...(opts.period && opts.show?.period !== false ? ["period"] : []),
+          ...(opts.show?.excerpt !== false ? ["excerpt"] : []),
+          ...((opts.fields ?? []) as string[]).filter((k) => k !== opts.period?.start && k !== opts.period?.end).map((k) => `f:${k}`),
+        ]) as string[],
+    image: opts.show?.image !== false,
     periodStart: opts.period?.start ?? "",
     periodEnd: opts.period?.end ?? "",
     facet: opts.facet ?? "",
     layout: (opts.layout ?? "list") as string,
-    show: { date: true, source: true, period: true, excerpt: true, image: true, ...(opts.show ?? {}) } as Record<ShowKey, boolean>,
     excerpt_length: (opts.excerpt_length ?? 140) as number,
     per_page: (opts.per_page ?? 30) as number,
     sort: { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" }, ...(opts.sort ?? {}) } as Record<SortTab, { key: string; dir: string }>,
@@ -651,13 +652,24 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     ...(hasPeriod ? ([["period_start", "期間の開始"], ["period_end", "期間の終了"]] as [string, string][]) : []),
     ...fields.map((f) => [`f:${f.key}`, f.label] as [string, string]),
   ];
-  const moveField = (k: string, d: -1 | 1) => {
-    const a = [...form.fields];
+  // 表示できる項目（期間は期間を設定したときだけ）
+  const candidates: [string, string][] = [
+    ["date", "日付"],
+    ["source", "情報源"],
+    ["title", "タイトル"],
+    ...(hasPeriod ? ([["period", "期間"]] as [string, string][]) : []),
+    ["excerpt", "概要"],
+    ...fields.map((f) => [`f:${f.key}`, f.label] as [string, string]),
+  ];
+  const label = new Map(candidates);
+  const shownItems = form.display.filter((k) => label.has(k));
+  const move = (k: string, d: -1 | 1) => {
+    const a = [...shownItems];
     const i = a.indexOf(k);
     const j = i + d;
     if (i < 0 || j < 0 || j >= a.length) return;
     [a[i], a[j]] = [a[j], a[i]];
-    setForm({ ...form, fields: a });
+    setForm({ ...form, display: a });
   };
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -677,11 +689,11 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
               title: form.title,
               description: form.description,
               options: {
-                fields: form.fields,
+                display: shownItems,
                 period: hasPeriod ? { start: form.periodStart, end: form.periodEnd } : null,
                 facet: form.facet || null,
                 layout: form.layout,
-                show: form.show,
+                show: { image: form.image },
                 excerpt_length: form.excerpt_length,
                 per_page: form.per_page,
                 sort: hasPeriod ? form.sort : { all: form.sort.all },
@@ -714,34 +726,6 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
         <input type="text" placeholder={set.name} value={form.title} maxLength={80} onChange={(e) => setForm({ ...form, title: e.target.value })} />
         <div>説明</div>
         <textarea rows={2} placeholder="例：京都の美術館・博物館の展覧会情報をまとめています。" value={form.description} maxLength={400} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-        <div>表示するフィールド</div>
-        <div>
-          {fields.length === 0 && <span className="muted">カスタムフィールドはありません</span>}
-          <ul className="field-order">
-            {[...form.fields.map((k) => fields.find((f) => f.key === k)).filter((f): f is FieldDef => !!f), ...fields.filter((f) => !form.fields.includes(f.key))].map((f) => {
-              const on = form.fields.includes(f.key);
-              return (
-                <li key={f.key} className="row">
-                  <label className="row">
-                    <input type="checkbox" checked={on} onChange={(e) => setForm({ ...form, fields: e.target.checked ? [...form.fields, f.key] : form.fields.filter((k) => k !== f.key) })} />
-                    {f.label}
-                  </label>
-                  {on && (
-                    <>
-                      <button type="button" className="link small" title="前へ" onClick={() => moveField(f.key, -1)}>
-                        ↑
-                      </button>
-                      <button type="button" className="link small" title="後ろへ" onClick={() => moveField(f.key, 1)}>
-                        ↓
-                      </button>
-                    </>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          <span className="muted">チェックした順に表示します（↑↓で並べ替え）</span>
-        </div>
         <div>期間</div>
         <div className="row">
           {dates.length >= 2 ? (
@@ -796,19 +780,48 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
           ))}
         </div>
         <div>表示する項目</div>
-        <div className="row" style={{ flexWrap: "wrap" }}>
-          {SHOW_CHOICES.filter(([k]) => k !== "period" || hasPeriod).map(([k, label]) => (
-            <label key={k} className="row">
-              <input type="checkbox" checked={form.show[k]} onChange={(e) => setForm({ ...form, show: { ...form.show, [k]: e.target.checked } })} />
-              {label}
-            </label>
-          ))}
-          {form.show.excerpt && (
-            <label className="row">
-              概要の文字数
-              <input type="number" min={20} max={400} step={10} style={{ width: 80 }} value={form.excerpt_length} onChange={(e) => setForm({ ...form, excerpt_length: Number(e.target.value) })} />
-            </label>
-          )}
+        <div>
+          <ol className="display-order">
+            {[...shownItems, ...candidates.map(([k]) => k).filter((k) => !shownItems.includes(k))].map((k) => {
+              const on = shownItems.includes(k);
+              const idx = shownItems.indexOf(k);
+              return (
+                <li key={k} className={`row${on ? "" : " off"}`}>
+                  <label className="row">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      disabled={k === "title"}
+                      onChange={(e) => setForm({ ...form, display: e.target.checked ? [...shownItems, k] : shownItems.filter((x) => x !== k) })}
+                    />
+                    {label.get(k)}
+                    {k.startsWith("f:") && <span className="muted">（フィールド）</span>}
+                  </label>
+                  {k === "excerpt" && on && (
+                    <label className="row muted">
+                      文字数
+                      <input type="number" min={20} max={400} step={10} style={{ width: 72 }} value={form.excerpt_length} onChange={(e) => setForm({ ...form, excerpt_length: Number(e.target.value) })} />
+                    </label>
+                  )}
+                  {on && (
+                    <span className="order-btns">
+                      <button type="button" className="link small" title="上へ" disabled={idx === 0} onClick={() => move(k, -1)}>
+                        ↑
+                      </button>
+                      <button type="button" className="link small" title="下へ" disabled={idx === shownItems.length - 1} onClick={() => move(k, 1)}>
+                        ↓
+                      </button>
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+          <label className="row">
+            <input type="checkbox" checked={form.image} onChange={(e) => setForm({ ...form, image: e.target.checked })} /> 画像を表示する
+            <span className="muted">（リストは右、カードは上。コンパクトと表では出しません）</span>
+          </label>
+          <span className="muted">上から順に表示します。表では左からの列の順になります。</span>
         </div>
         <div>並び順</div>
         <div className="sort-rows">
