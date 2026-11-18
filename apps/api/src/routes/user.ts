@@ -341,7 +341,7 @@ userApi.get("/items", async (c) => {
   if (view === "baseline") where.push("i.is_baseline = 1");
   if (view === "updated") where.push("i.last_changed_at IS NOT NULL");
   if (unread) where.push("rs.read_at IS NULL AND i.is_baseline = 0");
-  let order = view === "updated" ? "i.last_changed_at DESC" : view === "new" ? "COALESCE(i.last_changed_at, i.first_seen_at) DESC, i.id DESC" : "i.first_seen_at DESC, COALESCE(i.published_sort, '') DESC, i.id DESC";
+  let order = view === "updated" ? "i.last_changed_at DESC" : view === "new" ? "COALESCE(i.last_changed_at, i.first_seen_at) DESC, COALESCE(i.published_sort, '') DESC, i.id DESC" : "i.first_seen_at DESC, COALESCE(i.published_sort, '') DESC, i.id DESC";
   // セットのカスタムフィールドによる絞り込み・並べ替え
   const fields = setId ? await loadFields(c.env, setId) : [];
   if (setId) {

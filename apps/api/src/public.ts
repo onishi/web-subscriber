@@ -38,7 +38,7 @@ export interface PublicOptions {
 }
 /**
  * 絞り込み条件。key は published（日付）/ image / excerpt（概要）/ f:<フィールドのキー>。
- * op：not_empty / empty（共通）、future（今日以降）/ past（今日より前）（日付）、
+ * op：not_empty / empty（共通）、future（未来：今日を含む）/ past（過去：昨日まで）（日付）、
  * eq / ne（テキスト・複数値。value と一致する値がある / ない）、gte / lte（数値）、true / false（真偽）
  */
 export interface PublicFilter {

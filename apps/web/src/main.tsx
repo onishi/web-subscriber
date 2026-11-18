@@ -10,6 +10,7 @@ import { SubscriptionPage } from "./pages/Subscription.js";
 import { RunPage } from "./pages/Run.js";
 import { ConfigPage } from "./pages/Config.js";
 import { SetsNav, SetsPage, SetPage } from "./pages/Sets.js";
+import { KeyboardHelp } from "./Help.js";
 
 function App() {
   return (
@@ -36,6 +37,7 @@ function App() {
           <Route path="/sets/:id" element={<SetPage />} />
         </Routes>
       </main>
+      <KeyboardHelp />
     </div>
   );
 }

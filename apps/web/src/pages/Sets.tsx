@@ -624,8 +624,8 @@ const FILTER_OPS: Record<FilterKind, FilterOp[]> = {
 const FILTER_OP_LABEL: Record<FilterOp, string> = {
   not_empty: "空ではない",
   empty: "空",
-  future: "今日以降",
-  past: "今日より前",
+  future: "未来",
+  past: "過去",
   eq: "と一致する",
   ne: "と一致しない",
   gte: "以上",
@@ -832,6 +832,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                     />
                     {label.get(k)}
                     {k.startsWith("f:") && <span className="muted">（フィールド）</span>}
+                    {k === "date" && <span className="muted">（フィードの日付 または検出日）</span>}
                   </label>
                   {k === "excerpt" && on && (
                     <label className="row muted">
@@ -907,7 +908,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
             <button type="button" className="link small" disabled={form.filters.length >= 10} onClick={() => setForm({ ...form, filters: [...form.filters, { key: "published", op: "not_empty" }] })}>
               ＋ 条件を追加
             </button>
-            <span className="muted">すべての条件を満たす情報だけを表示します（どのタブにもかかります）</span>
+            <span className="muted">すべての条件を満たす情報だけを表示します（どのタブにもかかります）。日付の「未来」は今日を含みます</span>
           </div>
         </div>
         <div>並び順</div>

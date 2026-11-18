@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, fmtDateValue, fmtTime } from "../api.js";
 import { useApi } from "../hooks.js";
+import { notifySetsChanged, useSets } from "./Sets.js";
 
 interface ItemRow {
   id: string;
@@ -38,6 +39,31 @@ export const fmtFieldValue = (type: string, v: unknown) => (type === "boolean" ?
 
 const stripTags = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
+const PAGE = 50;
+type Density = "cozy" | "compact";
+const loadDensity = (): Density => {
+  try {
+    return localStorage.getItem("ws-density") === "compact" ? "compact" : "cozy";
+  } catch {
+    return "cozy";
+  }
+};
+/** 入力欄にフォーカスがあるときや修飾キー付きのときはショートカットを無視する */
+export const isTypingTarget = (e: KeyboardEvent) => {
+  const t = e.target as HTMLElement | null;
+  return e.metaKey || e.ctrlKey || e.altKey || !!(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)));
+};
+const shortTime = (iso: string) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const today = new Date();
+  const opt: Intl.DateTimeFormatOptions = { timeZone: "Asia/Tokyo" };
+  const sameDay = d.toLocaleDateString("ja-JP", opt) === today.toLocaleDateString("ja-JP", opt);
+  return sameDay
+    ? d.toLocaleTimeString("ja-JP", { ...opt, hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("ja-JP", { ...opt, month: "numeric", day: "numeric" });
+};
+
 export function ItemList({
   subscriptionId,
   setId,
@@ -45,6 +71,7 @@ export function ItemList({
   showViewTabs = false,
   params,
   fields,
+  onRead,
 }: {
   subscriptionId?: string;
   setId?: string;
@@ -53,26 +80,180 @@ export function ItemList({
   /** 追加の検索条件（カスタムフィールド f.* / sort） */
   params?: Record<string, string>;
   fields?: FieldDef[];
+  /** 既読・未読を変えたとき（未読数の更新用） */
+  onRead?: () => void;
 }) {
   const [view, setView] = useState(initialView);
   const [unread, setUnread] = useState(false);
-  const [offset, setOffset] = useState(0);
+  const [items, setItems] = useState<ItemRow[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const q = new URLSearchParams({ view, offset: String(offset), limit: "50" });
+  const [cursor, setCursor] = useState(-1);
+  const [density, setDensity] = useState<Density>(loadDensity);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const q = new URLSearchParams({ view, limit: String(PAGE) });
   if (unread) q.set("unread", "1");
   if (subscriptionId) q.set("subscription_id", subscriptionId);
   if (setId) q.set("set_id", setId);
   for (const [k, v] of Object.entries(params ?? {})) if (v) q.set(k, v);
-  const { data, error, reload, setData } = useApi<{ items: ItemRow[]; has_more: boolean }>(`/items?${q}`);
+  const qs = q.toString();
+  const reqId = useRef(0);
 
-  const markRead = async (it: ItemRow, read: boolean) => {
-    await api(`/items/${it.id}/read`, { method: read ? "PUT" : "DELETE" });
-    setData((d) => d && { ...d, items: d.items.map((x) => (x.id === it.id ? { ...x, is_read: read, updated_mark: read ? false : x.updated_mark } : x)) });
+  const load = useCallback(
+    async (offset: number) => {
+      const id = ++reqId.current;
+      setLoading(true);
+      try {
+        const d = await api<{ items: ItemRow[]; has_more: boolean }>(`/items?${qs}&offset=${offset}`);
+        if (id !== reqId.current) return;
+        setItems((prev) => (offset === 0 ? d.items : [...prev, ...d.items.filter((x) => !prev.some((p) => p.id === x.id))]));
+        setHasMore(d.has_more);
+        setError(null);
+      } catch (e) {
+        if (id === reqId.current) setError((e as Error).message);
+      } finally {
+        if (id === reqId.current) {
+          setLoading(false);
+          setLoaded(true);
+        }
+      }
+    },
+    [qs],
+  );
+  const reload = useCallback(() => {
+    setCursor(-1);
+    setOpen(null);
+    return load(0);
+  }, [load]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  const loadMore = useCallback(() => {
+    if (!loading && hasMore) void load(items.length);
+  }, [loading, hasMore, load, items.length]);
+
+  // 最後まで見えたら続きを読み込む
+  const sentinel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el) return;
+    const io = new IntersectionObserver((es) => es.some((x) => x.isIntersecting) && loadMore(), { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore]);
+
+  const markRead = useCallback(
+    async (it: ItemRow, read: boolean) => {
+      setItems((xs) => xs.map((x) => (x.id === it.id ? { ...x, is_read: read, updated_mark: read ? false : x.updated_mark } : x)));
+      await api(`/items/${it.id}/read`, { method: read ? "PUT" : "DELETE" });
+      onRead?.();
+    },
+    [onRead],
+  );
+  const markAllRead = async () => {
+    if (!window.confirm(setId || subscriptionId ? "この一覧をすべて既読にしますか？" : "すべての情報を既読にしますか？")) return;
+    await api("/items/mark-read", { method: "POST", json: subscriptionId ? { subscription_id: subscriptionId } : setId ? { set_id: setId } : {} });
+    onRead?.();
+    void reload();
   };
+  const toggleDensity = () =>
+    setDensity((d) => {
+      const n = d === "cozy" ? "compact" : "cozy";
+      try {
+        localStorage.setItem("ws-density", n);
+      } catch {
+        /* 保存できなくても表示は切り替える */
+      }
+      return n;
+    });
 
+  /** カーソルを i に移す。読み進めたものは既読にする。詳細を開いていれば次の詳細も開く */
+  const moveTo = useCallback(
+    (i: number) => {
+      if (i < 0 || i >= items.length) return;
+      const it = items[i];
+      setCursor(i);
+      if (open) setOpen(it.id);
+      if (!it.is_read || it.updated_mark) void markRead(it, true);
+      requestAnimationFrame(() => rowRefs.current.get(it.id)?.scrollIntoView({ block: open ? "start" : "nearest" }));
+      if (i >= items.length - 5) loadMore();
+    },
+    [items, open, markRead, loadMore],
+  );
+
+  const state = useRef({ items, cursor, open, moveTo, markRead, loadMore });
+  state.current = { items, cursor, open, moveTo, markRead, loadMore };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e)) return;
+      const { items, cursor, open, moveTo, markRead } = state.current;
+      const cur = items[cursor];
+      switch (e.key) {
+        case "j":
+        case "ArrowDown":
+          if (e.key === "ArrowDown" && cursor < 0) return;
+          e.preventDefault();
+          moveTo(cursor + 1);
+          break;
+        case "k":
+        case "ArrowUp":
+          if (e.key === "ArrowUp" && cursor < 0) return;
+          e.preventDefault();
+          moveTo(Math.max(0, cursor - 1));
+          break;
+        case "o":
+        case "Enter":
+          if (!cur) return;
+          e.preventDefault();
+          setOpen(open === cur.id ? null : cur.id);
+          if (!cur.is_read || cur.updated_mark) void markRead(cur, true);
+          requestAnimationFrame(() => rowRefs.current.get(cur.id)?.scrollIntoView({ block: "start" }));
+          break;
+        case "Escape":
+          if (open) setOpen(null);
+          break;
+        case "v":
+          if (cur?.primary_link) {
+            e.preventDefault();
+            window.open(cur.primary_link, "_blank", "noopener,noreferrer");
+            if (!cur.is_read) void markRead(cur, true);
+          }
+          break;
+        case "m":
+          if (cur) void markRead(cur, !cur.is_read || cur.updated_mark ? true : false);
+          break;
+        case "u":
+          setUnread((x) => !x);
+          break;
+        case "d":
+          toggleDensity();
+          break;
+        case "r":
+          void reload();
+          break;
+        case "A":
+          void markAllRead();
+          break;
+        case "g":
+          moveTo(0);
+          break;
+        case "G":
+          moveTo(items.length - 1);
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reload]);
+
+  const compact = density === "compact";
   return (
     <div>
-      <div className="row" style={{ marginBottom: 8 }}>
+      <div className="row list-toolbar">
         {showViewTabs && (
           <div className="tabs" style={{ marginBottom: 0 }}>
             {[
@@ -80,76 +261,104 @@ export function ItemList({
               ["updated", "更新"],
               ["baseline", "基準データ"],
             ].map(([v, l]) => (
-              <button key={v} className={view === v ? "on" : ""} onClick={() => (setView(v), setOffset(0))}>
+              <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)}>
                 {l}
               </button>
             ))}
           </div>
         )}
-        <label className="row small">
-          <input type="checkbox" checked={unread} onChange={(e) => (setUnread(e.target.checked), setOffset(0))} /> 未読のみ
+        <label className="row small" title="u">
+          <input type="checkbox" checked={unread} onChange={(e) => setUnread(e.target.checked)} /> 未読のみ
         </label>
+        <div className="seg small" role="group" aria-label="表示の密度">
+          <button type="button" className={compact ? "" : "on"} onClick={() => compact && toggleDensity()} title="d">
+            詳しく
+          </button>
+          <button type="button" className={compact ? "on" : ""} onClick={() => !compact && toggleDensity()} title="d">
+            1行
+          </button>
+        </div>
         <span className="spacer" />
-        <button
-          onClick={async () => {
-            await api("/items/mark-read", { method: "POST", json: subscriptionId ? { subscription_id: subscriptionId } : setId ? { set_id: setId } : {} });
-            void reload();
-          }}
-        >
+        <button className="link small shortcut-link" onClick={() => window.dispatchEvent(new Event("ws-help"))}>
+          ? ショートカット
+        </button>
+        <button onClick={() => void markAllRead()} title="Shift+A">
           すべて既読
         </button>
       </div>
       {error && <p className="error">{error}</p>}
-      {data && data.items.length === 0 && <p className="muted">item はありません。</p>}
-      {data?.items.map((it) => (
-        <div key={it.id}>
-          <div
-            className={`item ${it.is_read ? "read" : ""} ${it.image_url ? "has-thumb" : ""}`}
-            onClick={() => {
-              setOpen(open === it.id ? null : it.id);
-              if (!it.is_read || it.updated_mark) void markRead(it, true);
-            }}
-          >
-            {it.image_url && <img className="thumb" src={it.image_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />}
-            <div>
-              <div className="row">
-                {!it.is_read && !it.is_baseline && <span className="badge accent">未読</span>}
-                {it.updated_mark && <span className="badge warn">更新</span>}
-                {!!it.is_baseline && <span className="badge">基準データ</span>}
-                <span className="title">{it.title_text || it.primary_link || "(無題)"}</span>
+      {loaded && items.length === 0 && !error && <p className="muted">{unread ? "未読の情報はありません。" : "情報はありません。"}</p>}
+      <div className={compact ? "items compact" : "items"}>
+        {items.map((it, i) => {
+          const isNew = !it.is_read && !it.is_baseline;
+          return (
+            <div key={it.id}>
+              <div
+                ref={(el) => {
+                  if (el) rowRefs.current.set(it.id, el);
+                  else rowRefs.current.delete(it.id);
+                }}
+                className={`item ${it.is_read ? "read" : ""} ${!compact && it.image_url ? "has-thumb" : ""} ${cursor === i ? "cursor" : ""} ${open === it.id ? "opened" : ""}`}
+                onClick={() => {
+                  setCursor(i);
+                  setOpen(open === it.id ? null : it.id);
+                  if (!it.is_read || it.updated_mark) void markRead(it, true);
+                }}
+              >
+                {compact ? (
+                  <>
+                    <span className={`dot ${isNew ? "on" : it.updated_mark ? "warn" : ""}`} title={isNew ? "未読" : it.updated_mark ? "更新" : ""} />
+                    <span className="title">{it.title_text || it.primary_link || "(無題)"}</span>
+                    {!subscriptionId && <span className="src muted">{it.subscription_title}</span>}
+                    <span className="time muted" title={`検出 ${fmtTime(it.last_changed_at ?? it.first_seen_at)}`}>
+                      {shortTime(it.last_changed_at ?? it.first_seen_at)}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {it.image_url && <img className="thumb" src={it.image_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />}
+                    <div>
+                      <div className="row">
+                        {isNew && <span className="badge accent">未読</span>}
+                        {it.updated_mark && <span className="badge warn">更新</span>}
+                        {!!it.is_baseline && <span className="badge">基準データ</span>}
+                        <span className="title">{it.title_text || it.primary_link || "(無題)"}</span>
+                      </div>
+                      {it.summary && <div className="muted small">{stripTags(it.summary).slice(0, 140)}</div>}
+                      {fields && it.fields && Object.keys(it.fields).length > 0 && (
+                        <div className="row small field-values">
+                          {fields
+                            .filter((f) => it.fields![f.key]?.length)
+                            .map((f) => (
+                              <span key={f.key} className="field-value" title={it.fields_manual?.includes(f.key) ? "手で修正した値" : "AIが抽出した値"}>
+                                <span className="muted">{f.label}</span> {it.fields![f.key].map((v) => fmtFieldValue(f.type, v)).join("・")}
+                                {it.fields_manual?.includes(f.key) && <span className="manual-mark">✎</span>}
+                              </span>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="small muted" style={{ textAlign: "right" }}>
+                      {!subscriptionId && (
+                        <div>
+                          <Link to={`/subscriptions/${it.subscription_id}`} onClick={(e) => e.stopPropagation()}>
+                            {it.subscription_title}
+                          </Link>
+                        </div>
+                      )}
+                      <div title="公開日時（配信元の表記）">{fmtDateValue(it.published_at) || fmtDateValue(it.updated_at) || ""}</div>
+                      <div title="検出日時">検出 {fmtTime(it.last_changed_at ?? it.first_seen_at)}</div>
+                    </div>
+                  </>
+                )}
               </div>
-              {it.summary && <div className="muted small">{stripTags(it.summary).slice(0, 140)}</div>}
-              {fields && it.fields && Object.keys(it.fields).length > 0 && (
-                <div className="row small field-values">
-                  {fields
-                    .filter((f) => it.fields![f.key]?.length)
-                    .map((f) => (
-                      <span key={f.key} className="field-value" title={it.fields_manual?.includes(f.key) ? "手で修正した値" : "AIが抽出した値"}>
-                        <span className="muted">{f.label}</span> {it.fields![f.key].map((v) => fmtFieldValue(f.type, v)).join("・")}
-                        {it.fields_manual?.includes(f.key) && <span className="manual-mark">✎</span>}
-                      </span>
-                    ))}
-                </div>
-              )}
+              {open === it.id && <ItemDetail id={it.id} onUnread={() => markRead(it, false)} />}
             </div>
-            <div className="small muted" style={{ textAlign: "right" }}>
-              {!subscriptionId && (
-                <div>
-                  <Link to={`/subscriptions/${it.subscription_id}`} onClick={(e) => e.stopPropagation()}>
-                    {it.subscription_title}
-                  </Link>
-                </div>
-              )}
-              <div title="公開日時（配信元の表記）">{fmtDateValue(it.published_at) || fmtDateValue(it.updated_at) || ""}</div>
-              <div title="検出日時">検出 {fmtTime(it.last_changed_at ?? it.first_seen_at)}</div>
-            </div>
-          </div>
-          {open === it.id && <ItemDetail id={it.id} onUnread={() => markRead(it, false)} />}
-        </div>
-      ))}
-      <div className="row" style={{ marginTop: 10 }}>
-        {offset > 0 && <button onClick={() => setOffset(Math.max(0, offset - 50))}>前へ</button>}
-        {data?.has_more && <button onClick={() => setOffset(offset + 50)}>次へ</button>}
+          );
+        })}
+      </div>
+      <div ref={sentinel} className="small muted list-end">
+        {loading ? "読み込み中…" : hasMore ? <button onClick={loadMore}>さらに読み込む</button> : loaded && items.length > 0 ? `${items.length} 件` : null}
       </div>
     </div>
   );
@@ -192,58 +401,13 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
             元ページを開く ↗
           </a>
         )}
+        <span className="small muted">
+          {fmtDateValue(d.published_at) ? `公開 ${fmtDateValue(d.published_at)}・` : ""}検出 {fmtTime(data.first_seen_at)}
+        </span>
         <span className="spacer" />
-        <button onClick={onUnread}>未読に戻す</button>
-      </div>
-      {data.custom_fields?.length > 0 && <CustomFieldsEditor itemId={id} fields={data.custom_fields} reload={reload} />}
-      <div className="kv small" style={{ margin: "10px 0" }}>
-        {data.detail_checked_at && (
-          <>
-            <div>リンク先</div>
-            <div>
-              {data.detail_status === "ok" ? "詳細ページから取得" : "詳細ページから取得できず"}（{fmtTime(data.detail_checked_at)}）
-              {data.detail_data && <span className="muted">：{Object.keys(data.detail_data).filter((k) => !["links", "authors", "contributors", "categories", "native", "extensions"].includes(k) || (Array.isArray(data.detail_data[k]) && data.detail_data[k].length && k !== "extensions" && k !== "links")).join(", ")}</span>}
-            </div>
-          </>
-        )}
-        <div>配信元ID</div>
-        <div className="mono">{d.source_id ?? "—"}</div>
-        <div>公開日時</div>
-        <div>
-          {fmtDateValue(d.published_at) || "—"} {d.published_at?.tz === "assumed" && <span className="muted">（{d.published_at.assumed_tz}を補完）</span>}
-        </div>
-        <div>更新日時</div>
-        <div>{fmtDateValue(d.updated_at) || "—"}</div>
-        <div>検出 / 最終確認</div>
-        <div>
-          {fmtTime(data.first_seen_at)} / {fmtTime(data.last_seen_at)}
-        </div>
-        <div>著者</div>
-        <div>
-          {authors.effective?.map((a: any) => a.name ?? a.email).join(", ") || "—"}
-          {authors.from === "channel" && <span className="muted">（チャンネルから継承）</span>}
-        </div>
-        {d.categories.length > 0 && (
-          <>
-            <div>カテゴリ</div>
-            <div>{d.categories.map((c: any) => c.label ?? c.term).join(", ")}</div>
-          </>
-        )}
-        {enc.length > 0 && (
-          <>
-            <div>添付</div>
-            <div>
-              {enc.map((l: any) => (
-                <div key={l.href}>
-                  <a href={l.href} target="_blank" rel="noopener noreferrer">
-                    {l.href}
-                  </a>{" "}
-                  <span className="muted">{l.media_type} {l.length_bytes ? `${l.length_bytes} bytes` : ""}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
+        <button onClick={onUnread} title="m">
+          未読に戻す
+        </button>
       </div>
       {d.summary && (
         <>
@@ -265,6 +429,59 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
           )}
         </>
       )}
+      {data.custom_fields?.length > 0 && <CustomFieldsEditor itemId={id} fields={data.custom_fields} reload={reload} />}
+      <details className="item-meta">
+        <summary className="small muted">詳しい情報（日時・著者・取得元など）</summary>
+        <div className="kv small" style={{ margin: "10px 0" }}>
+          {data.detail_checked_at && (
+            <>
+              <div>リンク先</div>
+              <div>
+                {data.detail_status === "ok" ? "詳細ページから取得" : "詳細ページから取得できず"}（{fmtTime(data.detail_checked_at)}）
+                {data.detail_data && <span className="muted">：{Object.keys(data.detail_data).filter((k) => !["links", "authors", "contributors", "categories", "native", "extensions"].includes(k) || (Array.isArray(data.detail_data[k]) && data.detail_data[k].length && k !== "extensions" && k !== "links")).join(", ")}</span>}
+              </div>
+            </>
+          )}
+          <div>配信元ID</div>
+          <div className="mono">{d.source_id ?? "—"}</div>
+          <div>公開日時</div>
+          <div>
+            {fmtDateValue(d.published_at) || "—"} {d.published_at?.tz === "assumed" && <span className="muted">（{d.published_at.assumed_tz}を補完）</span>}
+          </div>
+          <div>更新日時</div>
+          <div>{fmtDateValue(d.updated_at) || "—"}</div>
+          <div>検出 / 最終確認</div>
+          <div>
+            {fmtTime(data.first_seen_at)} / {fmtTime(data.last_seen_at)}
+          </div>
+          <div>著者</div>
+          <div>
+            {authors.effective?.map((a: any) => a.name ?? a.email).join(", ") || "—"}
+            {authors.from === "channel" && <span className="muted">（チャンネルから継承）</span>}
+          </div>
+          {d.categories.length > 0 && (
+            <>
+              <div>カテゴリ</div>
+              <div>{d.categories.map((c: any) => c.label ?? c.term).join(", ")}</div>
+            </>
+          )}
+          {enc.length > 0 && (
+            <>
+              <div>添付</div>
+              <div>
+                {enc.map((l: any) => (
+                  <div key={l.href}>
+                    <a href={l.href} target="_blank" rel="noopener noreferrer">
+                      {l.href}
+                    </a>{" "}
+                    <span className="muted">{l.media_type} {l.length_bytes ? `${l.length_bytes} bytes` : ""}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </details>
       {d.native?.format === "html" && Object.keys(d.native.extracted_fields ?? {}).length > 0 && (
         <>
           <h3>追加フィールド</h3>
@@ -289,12 +506,59 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
   );
 }
 
+/** 未読数の更新をまとめて通知する（読み進めるたびに一覧を取り直さない） */
+let notifyTimer: ReturnType<typeof setTimeout> | null = null;
+const notifySetsChangedSoon = () => {
+  if (notifyTimer) clearTimeout(notifyTimer);
+  notifyTimer = setTimeout(notifySetsChanged, 1500);
+};
+
 export function ItemsPage() {
+  const [sp, setSp] = useSearchParams();
+  const { data: sets } = useSets();
+  const list = sets?.sets ?? [];
+  const setId = sp.get("set") ?? "";
+  const current = list.find((s) => s.id === setId) ?? null;
+  const detail = useApi<{ fields: FieldDef[] }>(current ? `/sets/${current.id}` : null);
+  const scopes = ["", ...list.map((s) => s.id)];
+  const go = (id: string) => setSp(id ? { set: id } : {}, { replace: false });
+  const state = useRef({ scopes, setId, go });
+  state.current = { scopes, setId, go };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e)) return;
+      const { scopes, setId, go } = state.current;
+      const i = Math.max(0, scopes.indexOf(setId));
+      if (e.key === "]" || e.key === "[") {
+        e.preventDefault();
+        go(scopes[(i + (e.key === "]" ? 1 : -1) + scopes.length) % scopes.length]);
+      } else if (/^[1-9]$/.test(e.key) && Number(e.key) <= scopes.length) {
+        go(scopes[Number(e.key) - 1]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
     <div>
-      <h2>新着</h2>
-      <p className="muted small">初回取得分（基準データ）は既読として表示します。内容が更新された item には「更新」印が付きます。</p>
-      <ItemList />
+      <div className="tabs scope-tabs" role="tablist">
+        {[{ id: "", name: "すべて", unread_count: 0 }, ...list].map((s, i) => (
+          <button key={s.id || "all"} role="tab" aria-selected={setId === s.id || (!current && !s.id)} className={setId === s.id || (!current && !s.id) ? "on" : ""} onClick={() => go(s.id)} title={i < 9 ? `${i + 1}` : undefined}>
+            {s.name}
+            {s.unread_count > 0 && <span className="count">{s.unread_count}</span>}
+          </button>
+        ))}
+      </div>
+      {current ? (
+        detail.data ? (
+          <ItemList key={current.id} setId={current.id} fields={detail.data.fields} onRead={notifySetsChangedSoon} />
+        ) : (
+          <p className="muted">読み込み中…</p>
+        )
+      ) : (
+        <ItemList key="all" onRead={notifySetsChangedSoon} />
+      )}
     </div>
   );
 }
