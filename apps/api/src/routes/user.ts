@@ -86,6 +86,24 @@ userApi.get("/subscriptions/:id", async (c) => {
   const versions = await c.env.DB.prepare("SELECT id, version, state, origin, note, created_at, activated_at, validation_summary_json, setup_session_id FROM config_versions WHERE subscription_id = ? ORDER BY version DESC").bind(s.id).all();
   const session = s.current_setup_session_id ? await c.env.DB.prepare("SELECT id, kind, status, error, created_at FROM setup_sessions WHERE id = ?").bind(s.current_setup_session_id).first() : null;
   const activeJob = await c.env.DB.prepare("SELECT j.status, j.not_before, r.id AS run_id, r.trigger FROM jobs j JOIN crawl_runs r ON r.id = j.run_id WHERE j.subscription_id = ? AND j.kind='crawl' AND j.status IN ('queued','leased')").bind(s.id).first();
+  const fieldStatus = (
+    await c.env.DB.prepare(
+      `SELECT m.set_id, st.name AS set_name,
+         (SELECT COUNT(*) FROM set_fields f WHERE f.set_id = m.set_id) AS field_count,
+         COUNT(i.id) AS total,
+         COALESCE(SUM(CASE WHEN e.status = 'ok' AND e.schema_hash = st.fields_hash THEN 1 ELSE 0 END), 0) AS done,
+         COALESCE(SUM(CASE WHEN e.status = 'error' AND e.schema_hash = st.fields_hash THEN 1 ELSE 0 END), 0) AS errors,
+         COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM item_field_values v WHERE v.item_id = i.id AND v.set_id = m.set_id) THEN 1 ELSE 0 END), 0) AS with_values,
+         MAX(CASE WHEN e.status = 'error' THEN e.error END) AS last_error,
+         MAX(e.updated_at) AS last_at
+       FROM set_members m JOIN sets st ON st.id = m.set_id
+       LEFT JOIN items i ON i.subscription_id = m.subscription_id
+       LEFT JOIN item_field_extractions e ON e.item_id = i.id AND e.set_id = m.set_id
+       WHERE m.subscription_id = ? GROUP BY m.set_id ORDER BY st.position, st.created_at`,
+    )
+      .bind(s.id)
+      .all<{ set_id: string; set_name: string; field_count: number; total: number; done: number; errors: number; with_values: number; last_error: string | null; last_at: string | null }>()
+  ).results;
   return c.json({
     subscription: s,
     active_config: cv ? { ...cv, config: json(cv.config_json as string, null) } : null,
@@ -93,7 +111,9 @@ userApi.get("/subscriptions/:id", async (c) => {
     versions: versions.results.map((v) => ({ ...v, validation_summary: json((v as { validation_summary_json: string }).validation_summary_json, null) })),
     current_session: session,
     active_job: activeJob,
-    set_ids: (await c.env.DB.prepare("SELECT set_id FROM set_members WHERE subscription_id = ?").bind(s.id).all<{ set_id: string }>()).results.map((r) => r.set_id),
+    set_ids: fieldStatus.map((r) => r.set_id),
+    // 入っているセットごとの、この購読先の item のカスタムフィールド抽出の状況
+    field_status: fieldStatus.map((r) => ({ ...r, ai: !!c.env.GEMINI_API_KEY })),
   });
 });
 

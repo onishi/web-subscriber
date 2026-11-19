@@ -66,4 +66,11 @@ describe("normalizePublicOptions: sections", () => {
     expect(o.sort.ended).toBeUndefined();
     expect(o.sort.all).toEqual({ key: "published", dir: "desc" });
   });
+  it("picks the calendar date key", () => {
+    expect(normalizePublicOptions({ layout: "calendar" }, fields).calendar_key).toBe("published");
+    expect(normalizePublicOptions({ layout: "calendar", period: { start: "start_date", end: "end_date" } }, fields).calendar_key).toBe("f:start_date");
+    expect(normalizePublicOptions({ layout: "calendar", calendar_key: "f:end_date" }, fields).calendar_key).toBe("f:end_date");
+    // 日付でないフィールドは使えない
+    expect(normalizePublicOptions({ layout: "calendar", calendar_key: "f:tags" }, fields).calendar_key).toBe("published");
+  });
 });

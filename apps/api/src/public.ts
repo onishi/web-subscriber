@@ -6,7 +6,7 @@ import type { HtmlEscapedString } from "hono/utils/html";
 import { type Env, json } from "./env.js";
 import { displayValue, loadFields, type SetField } from "./fields.js";
 
-export type PublicLayout = "list" | "cards" | "compact" | "table";
+export type PublicLayout = "list" | "cards" | "compact" | "table" | "calendar";
 /** タブ：区分の id、または all（すべて） */
 export type PublicTab = string;
 /** 並べ替えのキー：published（日付）/ first_seen（収集日）/ title / f:<フィールドのキー> */
@@ -31,6 +31,10 @@ export interface PublicOptions {
   /** 絞り込みチップに使う複数値（または テキスト）フィールド */
   facet?: string | null;
   layout?: PublicLayout;
+  /** ページの幅：normal（860px）/ wide（1200px）/ full（画面いっぱい・最大 1600px） */
+  width?: PublicWidth;
+  /** カレンダー表示でマスに置く日付：published（日付）または f:<日付フィールドのキー> */
+  calendar_key?: string;
   /**
    * 表示する項目とその順番。date / source / title / period / excerpt / f:<フィールドのキー>。
    * 未指定なら show と fields から組み立てる（以前の設定との互換）
@@ -73,7 +77,9 @@ export interface PublicSection {
 const SECTION_ID_RE = /^[a-z0-9_-]{1,24}$/;
 
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
-export const LAYOUTS: PublicLayout[] = ["list", "cards", "compact", "table"];
+export type PublicWidth = "normal" | "wide" | "full";
+const WIDTHS: PublicWidth[] = ["normal", "wide", "full"];
+export const LAYOUTS: PublicLayout[] = ["list", "cards", "compact", "table", "calendar"];
 const DEFAULT_SORT: Record<string, PublicSort> = { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" } };
 /** 項目の種類ごとに使える条件 */
 export const FILTER_OPS: Record<"date" | "text" | "list" | "number" | "boolean" | "plain", FilterOp[]> = {
@@ -89,7 +95,10 @@ const filterKind = (key: string, keys: Map<string, SetField>): keyof typeof FILT
 const clampInt = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d);
 
 /** 保存時・表示時の両方で使う。存在しないフィールドや不正な値は捨てて既定値に寄せる */
-export function normalizePublicOptions(o: PublicOptions | null | undefined, fields: SetField[]): Required<Omit<PublicOptions, "period" | "facet">> & Pick<PublicOptions, "period" | "facet"> {
+export function normalizePublicOptions(
+  o: PublicOptions | null | undefined,
+  fields: SetField[],
+): Required<Omit<PublicOptions, "period" | "facet" | "calendar_key">> & Pick<PublicOptions, "period" | "facet"> & { calendar_key: string } {
   o = o ?? {};
   const keys = new Map(fields.map((f) => [f.key, f]));
   const period = o.period && keys.get(o.period.start)?.type === "date" && keys.get(o.period.end)?.type === "date" ? { start: o.period.start, end: o.period.end } : null;
@@ -145,6 +154,14 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     period,
     facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
     layout: LAYOUTS.includes(o.layout as PublicLayout) ? (o.layout as PublicLayout) : "list",
+    width: WIDTHS.includes(o.width as PublicWidth) ? (o.width as PublicWidth) : "normal",
+    // 未指定なら期間の開始、なければ日付
+    calendar_key:
+      typeof o.calendar_key === "string" && (o.calendar_key === "published" || (o.calendar_key.startsWith("f:") && keys.get(o.calendar_key.slice(2))?.type === "date"))
+        ? o.calendar_key
+        : period
+          ? `f:${period.start}`
+          : "published",
     show: { date: display.includes("date"), source: display.includes("source"), period: display.includes("period"), excerpt: display.includes("excerpt"), image: show.image !== false },
     excerpt_length: clampInt(o.excerpt_length, 20, 400, 140),
     per_page: clampInt(o.per_page, 10, 100, 30),
@@ -338,8 +355,29 @@ publicPages.get("/:slug", async (c) => {
     where.push("EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND fv.value_text = ?)");
     args.push(facet.id, facetValue);
   }
+  // カレンダー：表示する月（?month=YYYY-MM、既定は今月）と、その月に日付がある item
+  const calendar = kind === "calendar";
+  const qMonth = c.req.query("month") ?? "";
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(qMonth) && qMonth >= "1970-01" && qMonth <= "2999-12" ? qMonth : today.slice(0, 7);
+  const calKey = opts.calendar_key;
+  const calField = calKey.startsWith("f:") ? byKey.get(calKey.slice(2)) : undefined;
+  const calendarQuery = () => {
+    const from = `${month}-01`;
+    const to = `${month}-31`;
+    // 日まで分かる日付だけを使う（YYYY-MM / YYYY は置けない）
+    const [dateExpr, join, joinArgs] = calField
+      ? ["fv.value_date", "JOIN item_field_values fv ON fv.item_id = i.id AND fv.field_id = ? AND length(fv.value_date) = 10", [calField.id]]
+      : ["date(i.published_sort, '+9 hours')", "", []];
+    return c.env.DB.prepare(
+      `SELECT DISTINCT i.id, i.subscription_id, i.title_text, i.primary_link, ${dateExpr} AS d, ${secSql || "NULL"} AS sec
+       FROM items i ${join} WHERE ${where.join(" AND ")} AND ${dateExpr} BETWEEN ? AND ?
+       ORDER BY d, sec, TRIM(i.title_text, char(32, 9, 10, 13, 12288)), i.id LIMIT 1000`,
+    )
+      .bind(...(secSql ? secArgs : []), ...joinArgs, ...args, from, to)
+      .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; d: string; sec: number | null }>();
+  };
   // DB との往復を減らすため、互いに依存しない問い合わせはまとめて投げる
-  const [rs, sources, chipRows] = await Promise.all([
+  const [rs, sources, chipRows, calRows] = await Promise.all([
     c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
        ${IMAGE} AS image,
@@ -348,7 +386,7 @@ publicPages.get("/:slug", async (c) => {
        ${secSql || "NULL"} AS sec
      FROM items i WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`,
   )
-    .bind(...(secSql ? secArgs : []), ...args, PER_PAGE + 1, (page - 1) * PER_PAGE)
+    .bind(...(secSql ? secArgs : []), ...args, PER_PAGE + 1, calendar ? 0 : (page - 1) * PER_PAGE)
     .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null; sec: number | null }>(),
     // 情報源（購読先）
     c.env.DB.prepare(
@@ -365,6 +403,7 @@ publicPages.get("/:slug", async (c) => {
           .bind(facet.id)
           .all<{ value: string; count: number }>()
       : null,
+    calendar ? calendarQuery() : null,
   ]);
   const items = rs.results.slice(0, PER_PAGE);
   const src = new Map(sources.results.map((s) => [s.id, s]));
@@ -394,7 +433,7 @@ publicPages.get("/:slug", async (c) => {
   const description = (st.public_description as string) || "";
   const q = (o: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
-    const all = { token: preview ? token : undefined, tab: tabs.length > 1 ? tab : undefined, v: facetValue || undefined, ...o };
+    const all = { token: preview ? token : undefined, tab: tabs.length > 1 ? tab : undefined, v: facetValue || undefined, month: calendar && month !== today.slice(0, 7) ? month : undefined, ...o };
     for (const [k, val] of Object.entries(all)) if (val !== undefined && val !== "" && !(k === "page" && String(val) === "1")) p.set(k, String(val));
     const s = p.toString();
     return s ? `?${s}` : "?";
@@ -522,6 +561,51 @@ publicPages.get("/:slug", async (c) => {
     </table>
   </div>`;
 
+  /** 月のカレンダー（日曜始まり）。狭い画面では item のある日だけの一覧になる */
+  const calendarEl = () => {
+    const byDay = new Map<string, NonNullable<typeof calRows>["results"]>();
+    for (const r of calRows?.results ?? []) byDay.set(r.d, [...(byDay.get(r.d) ?? []), r]);
+    const [y, m] = month.split("-").map(Number);
+    const first = new Date(Date.UTC(y, m - 1, 1));
+    const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const lead = first.getUTCDay();
+    const shift = (n: number) => {
+      const d = new Date(Date.UTC(y, m - 1 + n, 1));
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    };
+    const cells: (number | null)[] = [...Array(lead).fill(null), ...Array.from({ length: days }, (_, i) => i + 1)];
+    while (cells.length % 7) cells.push(null);
+    const WD = ["日", "月", "火", "水", "木", "金", "土"];
+    const ev = (r: NonNullable<typeof calRows>["results"][number]) => {
+      const sec = r.sec != null ? sections[r.sec] : undefined;
+      const s = src.get(r.subscription_id);
+      const body = html`${sec?.badge ? html`<span class="sec-badge">${sec.label}</span>` : ""}${r.title_text ?? r.primary_link}`;
+      const link = safeUrl(r.primary_link);
+      return html`<li class="cal-ev" title="${s?.title ?? ""}">${link ? html`<a href="${link}" target="_blank" rel="noopener">${body}</a>` : body}</li>`;
+    };
+    return html`<div class="cal">
+      <nav class="cal-nav">
+        <a href="${q({ month: shift(-1), page: undefined })}">← 前の月</a>
+        <h2>${y}年${m}月</h2>
+        <a href="${q({ month: shift(1), page: undefined })}">次の月 →</a>
+      </nav>
+      ${month !== today.slice(0, 7) ? html`<p class="cal-today"><a href="${q({ month: today.slice(0, 7) })}">今月へ</a></p>` : ""}
+      <div class="cal-grid" role="table" aria-label="${y}年${m}月">
+        ${WD.map((w, i) => html`<div class="cal-wd${i === 0 ? " sun" : i === 6 ? " sat" : ""}" role="columnheader">${w}</div>`)}
+        ${cells.map((d, i) => {
+          if (!d) return html`<div class="cal-day out" aria-hidden="true"></div>`;
+          const key = `${month}-${String(d).padStart(2, "0")}`;
+          const evs = byDay.get(key) ?? [];
+          const wd = i % 7;
+          return html`<div class="cal-day${evs.length ? " has" : " none"}${key === today ? " today" : ""}${wd === 0 ? " sun" : wd === 6 ? " sat" : ""}" role="cell">
+            <div class="cal-date"><span class="cal-d">${d}</span><span class="cal-w">（${WD[wd]}）</span></div>
+            ${evs.length ? html`<ul>${evs.map(ev)}</ul>` : ""}
+          </div>`;
+        })}
+      </div>
+      ${(calRows?.results.length ?? 0) === 0 ? html`<p class="empty">この月に日付のある情報はありません。</p>` : ""}
+    </div>`;
+  };
   const listOf = (xs: typeof items) =>
     kind === "table" ? table(xs) : kind === "cards" ? html`<ol class="cards">${xs.map(entry)}</ol>` : kind === "compact" ? html`<ol class="rows">${xs.map(entry)}</ol>` : html`<ol class="entries">${xs.map(entry)}</ol>`;
   // 見出しでまとめるときは、続いて並ぶ同じ区分ごとに見出しを付ける
@@ -550,14 +634,14 @@ publicPages.get("/:slug", async (c) => {
       html`
         ${preview ? html`<div class="preview-bar">プレビュー：このページは非公開です。この URL を知っている人だけが見られます。</div>` : ""}
         <header class="hero">
-          <div class="wrap">
+          <div class="wrap w-${opts.width}">
             <a class="brand" href="./">radar</a>
             <h1>${title}</h1>
             ${description ? html`<p class="lead">${description}</p>` : ""}
             <p class="meta">${sources.results.length} の情報源から自動で収集${updated ? html`・最終更新 ${fmtJst(updated)}` : ""}</p>
           </div>
         </header>
-        <main class="wrap">
+        <main class="wrap w-${opts.width}">
           ${tabs.length > 1
             ? html`<nav class="tabs" aria-label="区分">
                 ${tabs.map((t) => html`<a href="${q({ tab: t.id, page: 1 })}" class="${tab === t.id ? "on" : ""}" ${tab === t.id ? raw('aria-current="page"') : ""}>${t.label}</a>`)}
@@ -569,8 +653,8 @@ publicPages.get("/:slug", async (c) => {
                 ${chips.map((ch) => html`<a href="${q({ v: ch.value, page: 1 })}" class="${facetValue === ch.value ? "on" : ""}">${ch.value}<span>${ch.count}</span></a>`)}
               </nav>`
             : ""}
-          ${items.length ? listEl() : html`<p class="empty">${tab === "all" ? "まだ情報がありません。" : `「${tabs.find((t) => t.id === tab)?.label ?? ""}」に当てはまる情報はありません。`}</p>`}
-          ${page > 1 || rs.results.length > PER_PAGE
+          ${calendar ? calendarEl() : items.length ? listEl() : html`<p class="empty">${tab === "all" ? "まだ情報がありません。" : `「${tabs.find((t) => t.id === tab)?.label ?? ""}」に当てはまる情報はありません。`}</p>`}
+          ${!calendar && (page > 1 || rs.results.length > PER_PAGE)
             ? html`<nav class="pager">
                 ${page > 1 ? html`<a href="${q({ page: page - 1 })}">← 前へ</a>` : html`<span></span>`}
                 <span>${page} ページ</span>
@@ -702,6 +786,9 @@ const CSS = `
 body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.7 "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
 a { color: inherit; }
 .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+.wrap.w-wide { max-width: 1200px; }
+.wrap.w-full { max-width: 1600px; padding: 0 24px; }
+@media (max-width: 600px) { .wrap.w-full { padding: 0 16px; } }
 .hero { border-bottom: 1px solid var(--line); padding: 48px 0 28px; }
 .hero h1, .entry-title { word-break: auto-phrase; }
 .hero h1 { font-family: "Hiragino Mincho ProN", "Noto Serif JP", serif; font-weight: 600; font-size: clamp(28px, 5vw, 40px); line-height: 1.3; margin: 0 0 12px; letter-spacing: .02em; }
@@ -729,7 +816,7 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .entry-title { font-size: 19px; line-height: 1.5; margin: 4px 0 4px; font-weight: 600; overflow-wrap: anywhere; }
 .sec-group + .sec-group { margin-top: 32px; }
 .sec-heading { margin: 24px 0 4px; font-size: 18px; font-weight: 700; padding-bottom: 6px; border-bottom: 2px solid var(--accent); display: inline-block; }
-.sec-badge { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; line-height: 1.6; vertical-align: 2px; white-space: nowrap; }
+.sec-badge { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 600; line-height: 1.6; vertical-align: 2px; white-space: nowrap; }
 .period { margin: 0 0 4px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .excerpt { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 .fields { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; font-size: 13px; }
@@ -738,6 +825,36 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .fields dd { margin: 0; }
 .thumb { width: 168px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 6px; background: var(--line); flex-shrink: 0; }
 .empty { color: var(--muted); padding: 48px 0; text-align: center; }
+.cal { margin-top: 16px; }
+.cal-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cal-nav h2 { margin: 0; font-size: 20px; }
+.cal-nav a, .cal-today a { color: var(--accent); text-decoration: none; font-size: 14px; }
+.cal-today { margin: 4px 0 0; text-align: center; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin-top: 12px; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+.cal-wd { padding: 6px; font-size: 12px; text-align: center; color: var(--muted); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); }
+.cal-day { min-height: 96px; padding: 4px 6px 6px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); min-width: 0; }
+.cal-day.out { background: transparent; }
+.cal-date { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.cal-w { display: none; }
+.sun .cal-d, .cal-wd.sun { color: #c0392b; }
+.sat .cal-d, .cal-wd.sat { color: #2c6fb7; }
+.cal-day.today { box-shadow: inset 0 0 0 2px var(--accent); }
+.cal-day.today .cal-d { font-weight: 700; color: var(--accent); }
+.cal-day ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cal-ev { font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.cal-ev a { color: var(--text); text-decoration: none; display: block; padding: 2px 4px; border-radius: 4px; background: var(--accent-weak); }
+.cal-ev a:hover { text-decoration: underline; }
+.cal-ev .sec-badge { font-size: 10px; padding: 0 5px; margin-right: 4px; }
+@media (max-width: 640px) {
+  .cal-grid { display: block; border: 0; }
+  .cal-wd, .cal-day.out, .cal-day.none { display: none; }
+  .cal-day { min-height: 0; border: 0; border-bottom: 1px solid var(--line); padding: 10px 0; background: transparent; display: flex; gap: 12px; }
+  .cal-day.today { box-shadow: none; }
+  .cal-date { flex: 0 0 4.5em; font-size: 15px; }
+  .cal-w { display: inline; font-size: 12px; }
+  .cal-day ul { margin: 0; flex: 1; }
+  .cal-ev { font-size: 14px; }
+}
 .pager { display: flex; justify-content: space-between; align-items: center; margin: 24px 0; font-size: 14px; color: var(--muted); }
 .pager a { color: var(--accent); text-decoration: none; }
 .sources { margin: 48px 0 40px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }

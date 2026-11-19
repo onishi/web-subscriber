@@ -604,6 +604,7 @@ const LAYOUT_CHOICES: [string, string, string][] = [
   ["cards", "カード", "画像を大きく、タイル状に並べる"],
   ["compact", "コンパクト", "日付とタイトルだけを1行で"],
   ["table", "表", "フィールドを列にして比べる"],
+  ["calendar", "カレンダー", "日付ごとに月のカレンダーに並べる"],
 ];
 
 /** セットの公開ページ（radar.wagaya.org/<slug>）の設定 */
@@ -814,6 +815,8 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     periodEnd: opts.period?.end ?? "",
     facet: opts.facet ?? "",
     layout: (opts.layout ?? "list") as string,
+    calendar_key: (opts.calendar_key ?? "") as string,
+    width: (opts.width ?? "normal") as string,
     excerpt_length: (opts.excerpt_length ?? 140) as number,
     per_page: (opts.per_page ?? 30) as number,
     sort: { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" }, ...(opts.sort ?? {}) } as Record<string, Sort>,
@@ -891,6 +894,8 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 period: hasPeriod ? { start: form.periodStart, end: form.periodEnd } : null,
                 facet: form.facet || null,
                 layout: form.layout,
+                calendar_key: form.calendar_key || undefined,
+                width: form.width,
                 show: { image: form.image },
                 excerpt_length: form.excerpt_length,
                 per_page: form.per_page,
@@ -983,6 +988,32 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
             </label>
           ))}
         </div>
+        <div>ページの幅</div>
+        <div className="row">
+          <select value={form.width} onChange={(e) => setForm({ ...form, width: e.target.value })}>
+            <option value="normal">標準（860px）</option>
+            <option value="wide">広め（1200px）</option>
+            <option value="full">全幅（画面いっぱい・最大 1600px）</option>
+          </select>
+          <span className="muted">カード・表・カレンダーは広めにすると一度に多く見られます</span>
+        </div>
+        {form.layout === "calendar" && (
+          <>
+            <div>カレンダーの日付</div>
+            <div className="row">
+              <select value={form.calendar_key} onChange={(e) => setForm({ ...form, calendar_key: e.target.value })}>
+                <option value="">{hasPeriod ? "期間の開始（既定）" : "日付（既定）"}</option>
+                <option value="published">日付（フィードの日付 または検出日）</option>
+                {dates.map((f) => (
+                  <option key={f.key} value={`f:${f.key}`}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+              <span className="muted">この日付のマスにタイトルを並べます（日まで分かる日付だけ）。スマホでは日付のある日だけの一覧になります</span>
+            </div>
+          </>
+        )}
         <div>表示する項目</div>
         <div>
           <ol className="display-order">

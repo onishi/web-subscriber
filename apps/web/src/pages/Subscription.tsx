@@ -227,7 +227,10 @@ export function SubscriptionPage() {
           <div>次回予定</div>
           <div>{s.status === "active" ? `${fmtTime(s.next_run_at)}（${fmtRelative(s.next_run_at)}）` : "—"}</div>
           <div>セット</div>
-          <SetMembership subscriptionId={s.id} setIds={data.set_ids ?? []} onChange={() => void reload()} />
+          <div>
+            <SetMembership subscriptionId={s.id} setIds={data.set_ids ?? []} onChange={() => void reload()} />
+            <FieldStatus rows={data.field_status ?? []} reload={reload} />
+          </div>
           <div>item 画像</div>
           <div className="row">
             <select
@@ -309,5 +312,64 @@ export function SubscriptionPage() {
         </div>
       )}
     </div>
+  );
+}
+
+type FieldStatusRow = { set_id: string; set_name: string; field_count: number; total: number; done: number; errors: number; with_values: number; last_error: string | null; last_at: string | null; ai: boolean };
+
+/** 入っているセットごとの、カスタムフィールドの抽出状況（ページの自動更新で進み具合が変わる） */
+function FieldStatus({ rows, reload }: { rows: FieldStatusRow[]; reload: () => Promise<unknown> }) {
+  const [started, setStarted] = useState<string | null>(null);
+  if (!rows.length) return null;
+  return (
+    <ul className="field-status small">
+      {rows.map((r) => {
+        const pending = r.total - r.done - r.errors;
+        const state = r.field_count === 0 ? "none" : pending > 0 ? "running" : r.errors > 0 ? "error" : "ok";
+        return (
+          <li key={r.set_id} className="row">
+            <Link to={`/sets/${r.set_id}`}>{r.set_name}</Link>
+            {state === "none" ? (
+              <span className="muted">カスタムフィールドなし</span>
+            ) : (
+              <>
+                <span className={`badge ${state === "ok" ? "ok" : state === "error" ? "err" : "warn"}`}>{state === "ok" ? "抽出済み" : state === "error" ? "失敗あり" : "抽出待ち"}</span>
+                <span>
+                  {r.done} / {r.total} 件
+                  {pending > 0 && `・未抽出 ${pending} 件`}
+                  {r.errors > 0 && `・失敗 ${r.errors} 件`}
+                </span>
+                <span className="muted" title="1つ以上のフィールドに値が入った item の数">
+                  値あり {r.with_values} 件
+                </span>
+                {r.done > 0 && r.with_values === 0 && <span className="muted">（本文にフィールドの情報が見つかっていません）</span>}
+                {pending > 0 && <span className="muted">5分ごとに少しずつ進みます</span>}
+                {r.errors > 0 && r.last_error && (
+                  <span className="error" title={r.last_error}>
+                    {r.last_error.slice(0, 60)}
+                  </span>
+                )}
+                {r.ai && pending + r.errors > 0 && (
+                  <button
+                    className="small"
+                    disabled={started === r.set_id}
+                    onClick={async () => {
+                      setStarted(r.set_id);
+                      await api(`/sets/${r.set_id}/fields/extract`, { method: "POST" });
+                      setTimeout(() => {
+                        setStarted(null);
+                        void reload();
+                      }, 15000);
+                    }}
+                  >
+                    {started === r.set_id ? "抽出中…" : "今すぐ抽出"}
+                  </button>
+                )}
+              </>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

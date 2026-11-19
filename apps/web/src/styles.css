@@ -151,6 +151,9 @@ button.link:hover { text-decoration: underline; }
 .layout-compact { grid-template-rows: repeat(3, 1fr); }
 .layout-compact i { height: 4px; align-self: center; }
 .layout-table { grid-template-rows: repeat(3, 1fr); }
+.layout-calendar { grid-template-rows: repeat(3, 1fr); }
+.layout-calendar i { background: repeating-linear-gradient(90deg, var(--panel) 0 12.5%, var(--line) 12.5% 14.2857%); }
+.layout-calendar i:nth-child(2) { background: repeating-linear-gradient(90deg, var(--panel) 0 12.5%, var(--line) 12.5% 14.2857%), var(--panel); box-shadow: inset 6px 0 0 -2px var(--muted); }
 .layout-table i { background: linear-gradient(90deg, var(--panel) 0 30%, var(--line) 30% 31%, var(--panel) 31% 65%, var(--line) 65% 66%, var(--panel) 66%); }
 .sort-rows, .filter-rows { display: flex; flex-direction: column; gap: 6px; }
 .sort-tab { min-width: 5em; }
@@ -194,3 +197,5 @@ kbd { display: inline-block; min-width: 1.6em; padding: 0 5px; border: 1px solid
 }
 .review-box { margin: 8px 0 12px; }
 .review-box textarea { min-height: 0; font-family: inherit; font-size: 13px; display: block; width: 100%; margin-top: 4px; }
+.field-status { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.field-status li { flex-wrap: wrap; gap: 4px 8px; }
