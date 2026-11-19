@@ -199,3 +199,21 @@ kbd { display: inline-block; min-width: 1.6em; padding: 0 5px; border: 1px solid
 .review-box textarea { min-height: 0; font-family: inherit; font-size: 13px; display: block; width: 100%; margin-top: 4px; }
 .field-status { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .field-status li { flex-wrap: wrap; gap: 4px 8px; }
+
+/* リーダー：詳細を右の列に出す（3ペイン）／画面の高さに収めてツールバーを固定 */
+main:has(.split), main:has(.reader-fill) { max-width: none; }
+.ilist-body.split { display: grid; grid-template-columns: minmax(340px, 2fr) minmax(0, 3fr); }
+.split-pane { border-left: 1px solid var(--line); padding: 0 8px 24px 24px; overflow-y: auto; overscroll-behavior: contain; position: sticky; top: 0; max-height: 100vh; max-height: 100dvh; align-self: start; }
+.split-pane .item-detail, .split-pane > div { margin-top: 0; }
+.split-empty { padding: 48px 0; text-align: center; }
+.ilist-body.split .items .item.opened { background: var(--accent-weak); }
+@media (min-width: 721px) {
+  main:has(.reader-fill) { height: 100vh; height: 100dvh; display: flex; flex-direction: column; padding-bottom: 0; }
+  .reader-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .reader-fill > .scope-tabs { flex: none; }
+  .ilist.fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .ilist.fill > .list-toolbar { flex: none; }
+  .ilist.fill > .ilist-body { flex: 1; min-height: 0; }
+  .ilist.fill .ilist-scroll { height: 100%; overflow-y: auto; overscroll-behavior: contain; padding-right: 8px; }
+  .ilist.fill .split-pane { position: static; max-height: none; height: 100%; }
+}

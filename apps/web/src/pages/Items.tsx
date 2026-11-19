@@ -75,6 +75,25 @@ const loadDensity = (): Density => {
     return "cozy";
   }
 };
+/** 詳細を右の列に出すか（広い画面のときだけ効く） */
+const loadSplit = (): boolean => {
+  try {
+    return localStorage.getItem("ws-split") !== "off";
+  } catch {
+    return true;
+  }
+};
+const SPLIT_MQ = "(min-width: 1100px)";
+function useMedia(q: string) {
+  const [m, setM] = useState(() => typeof window !== "undefined" && window.matchMedia(q).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(q);
+    const h = () => setM(mq.matches);
+    mq.addEventListener("change", h);
+    return () => mq.removeEventListener("change", h);
+  }, [q]);
+  return m;
+}
 /** 入力欄にフォーカスがあるときや修飾キー付きのときはショートカットを無視する */
 export const isTypingTarget = (e: KeyboardEvent) => {
   const t = e.target as HTMLElement | null;
@@ -99,6 +118,7 @@ export function ItemList({
   params,
   fields,
   onRead,
+  fill,
 }: {
   subscriptionId?: string;
   setId?: string;
@@ -109,6 +129,8 @@ export function ItemList({
   fields?: FieldDef[];
   /** 既読・未読を変えたとき（未読数の更新用） */
   onRead?: () => void;
+  /** 画面の高さに収め、ツールバーを固定して一覧（と詳細）だけをスクロールする */
+  fill?: boolean;
 }) {
   const [view, setView] = useState(initialView);
   const [unread, setUnread] = useState(false);
@@ -121,6 +143,24 @@ export function ItemList({
   const [open, setOpen] = useState<string | null>(null);
   const [cursor, setCursor] = useState(-1);
   const [density, setDensity] = useState<Density>(loadDensity);
+  const [splitPref, setSplitPref] = useState(loadSplit);
+  const wide = useMedia(SPLIT_MQ);
+  const split = wide && splitPref;
+  const paneRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const toggleSplit = () =>
+    setSplitPref((v) => {
+      try {
+        localStorage.setItem("ws-split", v ? "off" : "on");
+      } catch {
+        /* 保存できなくても切り替える */
+      }
+      return !v;
+    });
+  // 右の列は、別の item を開いたら先頭から
+  useEffect(() => {
+    paneRef.current?.scrollTo({ top: 0 });
+  }, [open]);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const q = new URLSearchParams({ view, limit: String(PAGE) });
   if (unread) q.set("unread", "1");
@@ -205,22 +245,31 @@ export function ItemList({
       if (i < 0 || i >= items.length) return;
       const it = items[i];
       setCursor(i);
-      if (open) setOpen(it.id);
+      // 右の列に詳細を出しているときは、選んだものをそのまま開く
+      if (open || split) setOpen(it.id);
       if (!it.is_read || it.updated_mark) void markRead(it, true);
-      requestAnimationFrame(() => rowRefs.current.get(it.id)?.scrollIntoView({ block: open ? "start" : "nearest" }));
+      requestAnimationFrame(() => rowRefs.current.get(it.id)?.scrollIntoView({ block: open && !split ? "start" : "nearest" }));
       if (i >= items.length - 5) loadMore();
     },
-    [items, open, markRead, loadMore],
+    [items, open, split, markRead, loadMore],
   );
 
-  const state = useRef({ items, cursor, open, moveTo, markRead, loadMore });
-  state.current = { items, cursor, open, moveTo, markRead, loadMore };
+  const state = useRef({ items, cursor, open, split, moveTo, markRead, loadMore });
+  state.current = { items, cursor, open, split, moveTo, markRead, loadMore };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e)) return;
-      const { items, cursor, open, moveTo, markRead } = state.current;
+      const { items, cursor, open, split, moveTo, markRead } = state.current;
       const cur = items[cursor];
       switch (e.key) {
+        case " ": {
+          // 右の列（なければ固定表示の一覧）をスクロールする
+          const el = split ? paneRef.current : fill ? listRef.current : null;
+          if (!el) return;
+          e.preventDefault();
+          el.scrollBy({ top: (e.shiftKey ? -0.8 : 0.8) * el.clientHeight, behavior: "smooth" });
+          break;
+        }
         case "j":
         case "ArrowDown":
           if (e.key === "ArrowDown" && cursor < 0) return;
@@ -237,9 +286,9 @@ export function ItemList({
         case "Enter":
           if (!cur) return;
           e.preventDefault();
-          setOpen(open === cur.id ? null : cur.id);
+          setOpen(open === cur.id && !split ? null : cur.id);
           if (!cur.is_read || cur.updated_mark) void markRead(cur, true);
-          requestAnimationFrame(() => rowRefs.current.get(cur.id)?.scrollIntoView({ block: "start" }));
+          if (!split) requestAnimationFrame(() => rowRefs.current.get(cur.id)?.scrollIntoView({ block: "start" }));
           break;
         case "Escape":
           if (open) setOpen(null);
@@ -281,7 +330,7 @@ export function ItemList({
 
   const compact = density === "compact";
   return (
-    <div>
+    <div className={`ilist${fill ? " fill" : ""}`}>
       <div className="row list-toolbar">
         {showViewTabs && (
           <div className="tabs" style={{ marginBottom: 0 }}>
@@ -307,6 +356,16 @@ export function ItemList({
             1行
           </button>
         </div>
+        {wide && (
+          <div className="seg small" role="group" aria-label="詳細の表示">
+            <button type="button" className={split ? "on" : ""} onClick={() => !split && toggleSplit()} title="詳細を右の列に出す">
+              右に詳細
+            </button>
+            <button type="button" className={split ? "" : "on"} onClick={() => split && toggleSplit()} title="詳細を一覧の中で開く">
+              一覧の中
+            </button>
+          </div>
+        )}
         <span className="spacer" />
         <button className="link small shortcut-link" onClick={() => window.dispatchEvent(new Event("ws-help"))}>
           ? ショートカット
@@ -315,6 +374,8 @@ export function ItemList({
           すべて既読
         </button>
       </div>
+      <div className={`ilist-body${split ? " split" : ""}`}>
+      <div className="ilist-scroll" ref={listRef}>
       {error && <p className="error">{error}</p>}
       {loaded && items.length === 0 && !error && <p className="muted">{unread ? "未読の情報はありません。" : "情報はありません。"}</p>}
       <div className={compact ? "items compact" : "items"}>
@@ -330,7 +391,7 @@ export function ItemList({
                 className={`item ${it.is_read ? "read" : ""} ${!compact && it.image_url ? "has-thumb" : ""} ${cursor === i ? "cursor" : ""} ${open === it.id ? "opened" : ""}`}
                 onClick={() => {
                   setCursor(i);
-                  setOpen(open === it.id ? null : it.id);
+                  setOpen(open === it.id && !split ? null : it.id);
                   if (!it.is_read || it.updated_mark) void markRead(it, true);
                 }}
               >
@@ -373,13 +434,31 @@ export function ItemList({
                   </>
                 )}
               </div>
-              {open === it.id && <ItemDetail id={it.id} onUnread={() => markRead(it, false)} />}
+              {open === it.id && !split && <ItemDetail id={it.id} onUnread={() => markRead(it, false)} />}
             </div>
           );
         })}
       </div>
       <div ref={sentinel} className="small muted list-end">
         {loading ? "読み込み中…" : hasMore ? <button onClick={loadMore}>さらに読み込む</button> : loaded && items.length > 0 ? `${items.length} 件` : null}
+      </div>
+      </div>
+      {split && (
+        <aside className="split-pane" ref={paneRef} aria-label="詳細">
+          {open ? (
+            <ItemDetail
+              key={open}
+              id={open}
+              onUnread={() => {
+                const it = items.find((x) => x.id === open);
+                if (it) void markRead(it, false);
+              }}
+            />
+          ) : (
+            <p className="muted split-empty">一覧から選ぶ（j / k またはクリック）と、ここに詳細が出ます。Space で詳細をスクロールできます。</p>
+          )}
+        </aside>
+      )}
       </div>
     </div>
   );
@@ -606,7 +685,7 @@ export function ItemsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <div>
+    <div className="reader-fill">
       <div className="tabs scope-tabs" role="tablist">
         {[{ id: "", name: "すべて", unread_count: 0 }, ...list].map((s, i) => (
           <button key={s.id || "all"} role="tab" aria-selected={setId === s.id || (!current && !s.id)} className={setId === s.id || (!current && !s.id) ? "on" : ""} onClick={() => go(s.id)} title={i < 9 ? `${i + 1}` : undefined}>
@@ -617,9 +696,9 @@ export function ItemsPage() {
       </div>
       {current ? (
         // フィールドの定義は一覧と並行して読み込み、届いたら値を表示する
-        <ItemList key={current.id} setId={current.id} fields={detail.data?.fields} onRead={notifySetsChangedSoon} />
+        <ItemList key={current.id} setId={current.id} fields={detail.data?.fields} onRead={notifySetsChangedSoon} fill />
       ) : (
-        <ItemList key="all" onRead={notifySetsChangedSoon} />
+        <ItemList key="all" onRead={notifySetsChangedSoon} fill />
       )}
     </div>
   );

@@ -30,6 +30,8 @@ export interface PublicOptions {
   group_sections?: boolean;
   /** 絞り込みチップに使う複数値（または テキスト）フィールド */
   facet?: string | null;
+  /** 情報源（購読先）ごとの絞り込みボタンを出す */
+  source_filter?: boolean;
   layout?: PublicLayout;
   /** ページの幅：normal（860px）/ wide（1200px）/ full（画面いっぱい・最大 1600px） */
   width?: PublicWidth;
@@ -155,6 +157,7 @@ export function normalizePublicOptions(
     facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
     layout: LAYOUTS.includes(o.layout as PublicLayout) ? (o.layout as PublicLayout) : "list",
     width: WIDTHS.includes(o.width as PublicWidth) ? (o.width as PublicWidth) : "normal",
+    source_filter: !!o.source_filter,
     // 未指定なら期間の開始、なければ日付
     calendar_key:
       typeof o.calendar_key === "string" && (o.calendar_key === "published" || (o.calendar_key.startsWith("f:") && keys.get(o.calendar_key.slice(2))?.type === "date"))
@@ -355,6 +358,17 @@ publicPages.get("/:slug", async (c) => {
     where.push("EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND fv.value_text = ?)");
     args.push(facet.id, facetValue);
   }
+  // 情報源での絞り込み（?src=<購読先の id>）。件数は情報源を絞る前の条件で数える
+  const srcValue = opts.source_filter && /^[0-9A-Z]{26}$/.test(c.req.query("src") ?? "") ? c.req.query("src")! : "";
+  const srcCountQuery = opts.source_filter
+    ? c.env.DB.prepare(`SELECT i.subscription_id AS id, COUNT(*) AS count FROM items i WHERE ${where.join(" AND ")} GROUP BY i.subscription_id`)
+        .bind(...args)
+        .all<{ id: string; count: number }>()
+    : null;
+  if (srcValue) {
+    where.push("i.subscription_id = ?");
+    args.push(srcValue);
+  }
   // カレンダー：表示する月（?month=YYYY-MM、既定は今月）と、その月に日付がある item
   const calendar = kind === "calendar";
   const qMonth = c.req.query("month") ?? "";
@@ -377,7 +391,7 @@ publicPages.get("/:slug", async (c) => {
       .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; d: string; sec: number | null }>();
   };
   // DB との往復を減らすため、互いに依存しない問い合わせはまとめて投げる
-  const [rs, sources, chipRows, calRows] = await Promise.all([
+  const [rs, sources, chipRows, calRows, srcCounts] = await Promise.all([
     c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
        ${IMAGE} AS image,
@@ -406,6 +420,7 @@ publicPages.get("/:slug", async (c) => {
           .all<{ value: string; count: number }>()
       : null,
     calendar ? calendarQuery() : null,
+    srcCountQuery,
   ]);
   const items = rs.results.slice(0, PER_PAGE);
   const src = new Map(sources.results.map((s) => [s.id, s]));
@@ -435,7 +450,7 @@ publicPages.get("/:slug", async (c) => {
   const description = (st.public_description as string) || "";
   const q = (o: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
-    const all = { token: preview ? token : undefined, tab: tabs.length > 1 ? tab : undefined, v: facetValue || undefined, month: calendar && month !== today.slice(0, 7) ? month : undefined, ...o };
+    const all = { token: preview ? token : undefined, tab: tabs.length > 1 ? tab : undefined, v: facetValue || undefined, src: srcValue || undefined, month: calendar && month !== today.slice(0, 7) ? month : undefined, ...o };
     for (const [k, val] of Object.entries(all)) if (val !== undefined && val !== "" && !(k === "page" && String(val) === "1")) p.set(k, String(val));
     const s = p.toString();
     return s ? `?${s}` : "?";
@@ -594,11 +609,11 @@ publicPages.get("/:slug", async (c) => {
     };
     return html`<div class="cal">
       <nav class="cal-nav">
-        <a href="${q({ month: shift(-1), page: undefined })}">← 前の月</a>
+        <a href="${q({ month: shift(-1), page: undefined })}" data-kb="prev">← 前の月</a>
         <h2>${y}年${m}月</h2>
-        <a href="${q({ month: shift(1), page: undefined })}">次の月 →</a>
+        <a href="${q({ month: shift(1), page: undefined })}" data-kb="next">次の月 →</a>
       </nav>
-      ${month !== today.slice(0, 7) ? html`<p class="cal-today"><a href="${q({ month: today.slice(0, 7) })}">今月へ</a></p>` : ""}
+      ${month !== today.slice(0, 7) ? html`<p class="cal-today"><a href="${q({ month: today.slice(0, 7) })}" data-kb="today">今月へ</a></p>` : ""}
       <div class="cal-grid" role="table" aria-label="${y}年${m}月">
         ${WD.map((w, i) => html`<div class="cal-wd${i === 0 ? " sun" : i === 6 ? " sat" : ""}" role="columnheader">${w}</div>`)}
         ${cells.map((d, i) => {
@@ -653,8 +668,20 @@ publicPages.get("/:slug", async (c) => {
         <main class="wrap w-${opts.width}">
           ${tabs.length > 1
             ? html`<nav class="tabs" aria-label="区分">
-                ${tabs.map((t) => html`<a href="${q({ tab: t.id, page: 1 })}" class="${tab === t.id ? "on" : ""}" ${tab === t.id ? raw('aria-current="page"') : ""}>${t.label}</a>`)}
+                ${tabs.map((t) => html`<a href="${q({ tab: t.id, page: 1 })}" data-kb-tab class="${tab === t.id ? "on" : ""}" ${tab === t.id ? raw('aria-current="page"') : ""}>${t.label}</a>`)}
               </nav>`
+            : ""}
+          ${srcCounts
+            ? (() => {
+                const n = new Map(srcCounts.results.map((r) => [r.id, r.count]));
+                const xs = sources.results.filter((x) => (n.get(x.id) ?? 0) > 0 || x.id === srcValue);
+                return xs.length > 1 || srcValue
+                  ? html`<nav class="chips src-chips" aria-label="情報源">
+                      <a href="${q({ src: undefined, page: 1 })}" class="${srcValue ? "" : "on"}">すべての情報源</a>
+                      ${xs.map((x) => html`<a href="${q({ src: x.id, page: 1 })}" class="${srcValue === x.id ? "on" : ""}">${x.title}<span>${n.get(x.id) ?? 0}</span></a>`)}
+                    </nav>`
+                  : "";
+              })()
             : ""}
           ${chips.length
             ? html`<nav class="chips" aria-label="${facet!.label}">
@@ -665,9 +692,9 @@ publicPages.get("/:slug", async (c) => {
           ${calendar ? calendarEl() : items.length ? listEl() : html`<p class="empty">${tab === "all" ? "まだ情報がありません。" : `「${tabs.find((t) => t.id === tab)?.label ?? ""}」に当てはまる情報はありません。`}</p>`}
           ${!calendar && (page > 1 || rs.results.length > PER_PAGE)
             ? html`<nav class="pager">
-                ${page > 1 ? html`<a href="${q({ page: page - 1 })}">← 前へ</a>` : html`<span></span>`}
+                ${page > 1 ? html`<a href="${q({ page: page - 1 })}" data-kb="prev">← 前へ</a>` : html`<span></span>`}
                 <span>${page} ページ</span>
-                ${rs.results.length > PER_PAGE ? html`<a href="${q({ page: page + 1 })}">次へ →</a>` : html`<span></span>`}
+                ${rs.results.length > PER_PAGE ? html`<a href="${q({ page: page + 1 })}" data-kb="next">次へ →</a>` : html`<span></span>`}
               </nav>`
             : ""}
           <footer class="sources">
@@ -676,6 +703,7 @@ publicPages.get("/:slug", async (c) => {
               ${sources.results.map((s) => html`<li><a href="${safeUrl(s.home) ?? safeUrl(s.input_url) ?? "#"}" target="_blank" rel="noopener">${s.title}</a></li>`)}
             </ul>
             <p>各情報の内容は情報源のサイトでご確認ください。このページは各サイトの公開情報を自動で収集・整理しています。</p>
+            <p class="kb-hint"><a href="#" data-kb-help>キーボードショートカット（?）</a></p>
           </footer>
         </main>
       `,
@@ -784,9 +812,64 @@ function layout(title: string, description: string, body: H): H {
       </head>
       <body>
         ${body}
+        <script>
+          ${raw(KEYS_JS)}
+        </script>
       </body>
     </html>`;
 }
+
+/** キーボードショートカット（j/k で移動、o/Enter で開く、h/l でページ・月、1-9 でタブ、? でヘルプ） */
+const KEYS_JS = `(() => {
+  const SEL = "li.entry, li.card, li.row-item, .entries-table tbody tr, .cal-ev";
+  let cur = -1;
+  const list = () => [...document.querySelectorAll(SEL)].filter((el) => el.offsetParent !== null);
+  const linkOf = (el) => el && (el.matches("a[href]") ? el : el.querySelector("a[href]"));
+  const select = (i) => {
+    const xs = list();
+    if (!xs.length) return;
+    cur = Math.max(0, Math.min(xs.length - 1, i));
+    xs.forEach((el, j) => el.classList.toggle("kb-cur", j === cur));
+    xs[cur].scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
+  const go = (sel) => { const a = document.querySelector(sel); if (a) location.href = a.href; };
+  let help = null;
+  const toggleHelp = (show) => {
+    if (!help) {
+      help = document.createElement("div");
+      help.className = "kb-help";
+      help.setAttribute("role", "dialog");
+      help.setAttribute("aria-label", "キーボードショートカット");
+      const rows = [["j / k", "次 / 前の情報"], ["o / Enter", "選んだ情報を新しいタブで開く"], ["h / l（← / →）", "前 / 次のページ（カレンダーは月）"], ["t", "今月へ（カレンダー）"], ["1〜9", "タブを切り替える"], ["?", "このヘルプ"], ["Esc", "閉じる・選択を外す"]];
+      help.innerHTML = '<div class="kb-box"><h2>キーボードショートカット</h2><dl>' + rows.map((r) => "<dt><kbd>" + r[0] + "</kbd></dt><dd>" + r[1] + "</dd>").join("") + '</dl><button type="button">閉じる</button></div>';
+      help.addEventListener("click", (e) => { if (e.target === help || e.target.tagName === "BUTTON") toggleHelp(false); });
+      document.body.appendChild(help);
+    }
+    help.hidden = !(show ?? help.hidden);
+  };
+  document.addEventListener("click", (e) => { const a = e.target.closest && e.target.closest("[data-kb-help]"); if (a) { e.preventDefault(); toggleHelp(true); } });
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (help && !help.hidden) { if (e.key === "Escape" || e.key === "?") { toggleHelp(false); e.preventDefault(); } return; }
+    const k = e.key;
+    if (k === "j") select(cur + 1);
+    else if (k === "k") select(cur < 0 ? 0 : cur - 1);
+    else if (k === "o" || (k === "Enter" && cur >= 0 && t === document.body)) {
+      const a = linkOf(list()[cur]);
+      if (!a) return;
+      window.open(a.href, "_blank", "noopener");
+    } else if (k === "h" || k === "ArrowLeft") go('[data-kb="prev"]');
+    else if (k === "l" || k === "ArrowRight") go('[data-kb="next"]');
+    else if (k === "t") go('[data-kb="today"]');
+    else if (/^[1-9]$/.test(k)) { const a = document.querySelectorAll("[data-kb-tab]")[Number(k) - 1]; if (a) location.href = a.href; else return; }
+    else if (k === "?") toggleHelp(true);
+    else if (k === "Escape") { cur = -1; list().forEach((el) => el.classList.remove("kb-cur")); }
+    else return;
+    e.preventDefault();
+  });
+})();`;
 
 const CSS = `
 :root { --bg: #faf8f4; --panel: #ffffff; --text: #1d1b18; --muted: #6e6a62; --line: #e6e1d7; --accent: #8a3b1e; --accent-weak: #f3e7df; color-scheme: light; }
@@ -864,6 +947,21 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
   .cal-day ul { margin: 0; flex: 1; }
   .cal-ev { font-size: 14px; }
 }
+.kb-cur { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
+tr.kb-cur { outline-offset: -2px; border-radius: 0; }
+.cal-ev.kb-cur { outline-offset: 1px; border-radius: 4px; }
+.kb-hint { font-size: 12px; }
+.kb-hint a { color: var(--muted); }
+@media (hover: none) { .kb-hint { display: none; } }
+.kb-help { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .4); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.kb-help[hidden] { display: none; }
+.kb-box { background: var(--panel); color: var(--text); border-radius: 12px; padding: 20px 24px; max-width: 420px; width: 100%; box-shadow: 0 10px 40px rgba(0, 0, 0, .25); }
+.kb-box h2 { margin: 0 0 12px; font-size: 17px; }
+.kb-box dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0 0 16px; font-size: 14px; }
+.kb-box dt { white-space: nowrap; }
+.kb-box dd { margin: 0; color: var(--muted); }
+.kb-box kbd { font: 12px ui-monospace, monospace; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.kb-box button { font: inherit; font-size: 14px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; }
 .pager { display: flex; justify-content: space-between; align-items: center; margin: 24px 0; font-size: 14px; color: var(--muted); }
 .pager a { color: var(--accent); text-decoration: none; }
 .sources { margin: 48px 0 40px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }

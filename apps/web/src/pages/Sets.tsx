@@ -814,6 +814,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     periodStart: opts.period?.start ?? "",
     periodEnd: opts.period?.end ?? "",
     facet: opts.facet ?? "",
+    source_filter: !!opts.source_filter,
     layout: (opts.layout ?? "list") as string,
     calendar_key: (opts.calendar_key ?? "") as string,
     width: (opts.width ?? "normal") as string,
@@ -893,6 +894,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 display: shownItems,
                 period: hasPeriod ? { start: form.periodStart, end: form.periodEnd } : null,
                 facet: form.facet || null,
+                source_filter: form.source_filter,
                 layout: form.layout,
                 calendar_key: form.calendar_key || undefined,
                 width: form.width,
@@ -973,6 +975,11 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
           </select>
           <span className="muted">値ごとのボタンで絞り込めます（例：動物）</span>
         </div>
+        <div>情報源で絞り込む</div>
+        <label className="row">
+          <input type="checkbox" checked={form.source_filter} onChange={(e) => setForm({ ...form, source_filter: e.target.checked })} /> 情報源ごとのボタンを出す
+          <span className="muted">（件数つき。押すとその情報源だけを表示します）</span>
+        </label>
         <div>レイアウト</div>
         <div className="layout-choices">
           {LAYOUT_CHOICES.map(([k, label, desc]) => (
