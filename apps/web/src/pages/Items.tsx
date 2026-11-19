@@ -25,6 +25,16 @@ interface ItemRow {
   fields?: Record<string, (string | number | boolean | null)[]>;
   /** 手で直したフィールドのキー */
   fields_manual?: string[];
+  /** 購読先の一覧：所属セットごとのカスタムフィールドの値・手で直したキー */
+  set_fields?: Record<string, Record<string, (string | number | boolean | null)[]>>;
+  set_fields_manual?: Record<string, string[]>;
+}
+
+/** 購読先の一覧で値を出すセットとそのフィールド */
+interface FieldSet {
+  id: string;
+  name: string;
+  fields: FieldDef[];
 }
 
 export interface FieldDef {
@@ -36,6 +46,23 @@ export interface FieldDef {
 }
 
 export const fmtFieldValue = (type: string, v: unknown) => (type === "boolean" ? (v ? "はい" : "いいえ") : String(v));
+
+/** 一覧の行に出すカスタムフィールドの値（setName があれば先頭にセット名を付ける） */
+function FieldValues({ defs, values, manual, setName }: { defs: FieldDef[]; values?: Record<string, (string | number | boolean | null)[]>; manual?: string[]; setName?: string }) {
+  const shown = defs.filter((f) => values?.[f.key]?.length);
+  if (!values || !shown.length) return null;
+  return (
+    <div className="row small field-values">
+      {setName && <span className="muted">{setName}：</span>}
+      {shown.map((f) => (
+        <span key={f.key} className="field-value" title={manual?.includes(f.key) ? "手で修正した値" : "AIが抽出した値"}>
+          <span className="muted">{f.label}</span> {values[f.key].map((v) => fmtFieldValue(f.type, v)).join("・")}
+          {manual?.includes(f.key) && <span className="manual-mark">✎</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 const stripTags = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -86,6 +113,7 @@ export function ItemList({
   const [view, setView] = useState(initialView);
   const [unread, setUnread] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
+  const [fieldSets, setFieldSets] = useState<FieldSet[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -107,8 +135,9 @@ export function ItemList({
       const id = ++reqId.current;
       setLoading(true);
       try {
-        const d = await api<{ items: ItemRow[]; has_more: boolean }>(`/items?${qs}&offset=${offset}`);
+        const d = await api<{ items: ItemRow[]; has_more: boolean; field_sets?: FieldSet[] }>(`/items?${qs}&offset=${offset}`);
         if (id !== reqId.current) return;
+        if (d.field_sets) setFieldSets(d.field_sets);
         setItems((prev) => (offset === 0 ? d.items : [...prev, ...d.items.filter((x) => !prev.some((p) => p.id === x.id))]));
         setHasMore(d.has_more);
         setError(null);
@@ -325,18 +354,10 @@ export function ItemList({
                         <span className="title">{it.title_text || it.primary_link || "(無題)"}</span>
                       </div>
                       {it.summary && <div className="muted small">{stripTags(it.summary).slice(0, 140)}</div>}
-                      {fields && it.fields && Object.keys(it.fields).length > 0 && (
-                        <div className="row small field-values">
-                          {fields
-                            .filter((f) => it.fields![f.key]?.length)
-                            .map((f) => (
-                              <span key={f.key} className="field-value" title={it.fields_manual?.includes(f.key) ? "手で修正した値" : "AIが抽出した値"}>
-                                <span className="muted">{f.label}</span> {it.fields![f.key].map((v) => fmtFieldValue(f.type, v)).join("・")}
-                                {it.fields_manual?.includes(f.key) && <span className="manual-mark">✎</span>}
-                              </span>
-                            ))}
-                        </div>
-                      )}
+                      {fields && <FieldValues defs={fields} values={it.fields} manual={it.fields_manual} />}
+                      {fieldSets.map((fs) => (
+                        <FieldValues key={fs.id} defs={fs.fields} values={it.set_fields?.[fs.id]} manual={it.set_fields_manual?.[fs.id]} setName={fieldSets.length > 1 ? fs.name : undefined} />
+                      ))}
                     </div>
                     <div className="small muted" style={{ textAlign: "right" }}>
                       {!subscriptionId && (

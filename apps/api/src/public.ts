@@ -7,7 +7,8 @@ import { type Env, json } from "./env.js";
 import { displayValue, loadFields, type SetField } from "./fields.js";
 
 export type PublicLayout = "list" | "cards" | "compact" | "table";
-export type PublicTab = "now" | "upcoming" | "all";
+/** タブ：区分の id、または all（すべて） */
+export type PublicTab = string;
 /** 並べ替えのキー：published（日付）/ first_seen（収集日）/ title / f:<フィールドのキー> */
 export interface PublicSort {
   key: string;
@@ -16,8 +17,15 @@ export interface PublicSort {
 export interface PublicOptions {
   /** 表示するカスタムフィールドのキー（この順で表示。期間に使うキーは期間としてまとめて表示） */
   fields?: string[];
-  /** 期間（開始・終了の日付フィールド）。「開催中 / これから / すべて」のタブを出す */
+  /** 期間（開始・終了の日付フィールド）。「期間」の表示と並び順（期間の開始・終了）に使う */
   period?: { start: string; end: string } | null;
+  /**
+   * 区分。上から順に条件を見て、最初に当てはまった区分に入れる（下の区分には出さない）。
+   * 区分ごとにタブ・バッジ・非表示を選べる。未指定で period があれば「開催中 / これから」を組み立てる（以前の設定との互換）
+   */
+  sections?: PublicSection[];
+  /** 「すべて」タブを出すか（未指定は出す）。区分のタブがなければ常に「すべて」だけ */
+  all_tab?: boolean;
   /** 絞り込みチップに使う複数値（または テキスト）フィールド */
   facet?: string | null;
   layout?: PublicLayout;
@@ -30,8 +38,8 @@ export interface PublicOptions {
   show?: { date?: boolean; source?: boolean; period?: boolean; excerpt?: boolean; image?: boolean };
   excerpt_length?: number;
   per_page?: number;
-  /** タブごとの並び順（期間を使わないときは all だけを使う） */
-  sort?: Partial<Record<PublicTab, PublicSort>>;
+  /** タブごとの並び順（区分の id または all） */
+  sort?: Record<string, PublicSort>;
   default_tab?: PublicTab;
   /** すべてのタブにかかる絞り込み条件（すべて満たすものだけを表示） */
   filters?: PublicFilter[];
@@ -46,15 +54,28 @@ export interface PublicFilter {
   op: FilterOp;
   value?: string | number;
 }
-export type FilterOp = "not_empty" | "empty" | "future" | "past" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
+export type FilterOp = "not_empty" | "empty" | "future" | "past" | "until_today" | "next_days" | "last_days" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
+/** 区分：名前と条件（すべてを満たすと当てはまる。条件なしは何にでも当てはまる） */
+export interface PublicSection {
+  /** タブの URL（?tab=）と並び順のキー */
+  id: string;
+  label: string;
+  conditions: PublicFilter[];
+  /** タブにする */
+  tab: boolean;
+  /** 当てはまった情報にバッジ（ラベル）を付ける */
+  badge: boolean;
+  /** どのタブにも出さない（「すべて」からも外す） */
+  hidden: boolean;
+}
+const SECTION_ID_RE = /^[a-z0-9_-]{1,24}$/;
 
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export const LAYOUTS: PublicLayout[] = ["list", "cards", "compact", "table"];
-const TABS: PublicTab[] = ["now", "upcoming", "all"];
-const DEFAULT_SORT: Record<PublicTab, PublicSort> = { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" } };
+const DEFAULT_SORT: Record<string, PublicSort> = { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" } };
 /** 項目の種類ごとに使える条件 */
 export const FILTER_OPS: Record<"date" | "text" | "list" | "number" | "boolean" | "plain", FilterOp[]> = {
-  date: ["not_empty", "empty", "future", "past"],
+  date: ["not_empty", "empty", "future", "past", "until_today", "next_days", "last_days"],
   text: ["not_empty", "empty", "eq", "ne"],
   list: ["not_empty", "empty", "eq", "ne"],
   number: ["not_empty", "empty", "gte", "lte"],
@@ -72,10 +93,29 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
   const period = o.period && keys.get(o.period.start)?.type === "date" && keys.get(o.period.end)?.type === "date" ? { start: o.period.start, end: o.period.end } : null;
   const sortKeyOk = (k: unknown) =>
     typeof k === "string" && (["published", "first_seen", "title"].includes(k) || (period && (k === "period_start" || k === "period_end")) || (k.startsWith("f:") && keys.has(k.slice(2))));
-  const sort: Partial<Record<PublicTab, PublicSort>> = {};
-  for (const t of period ? TABS : (["all"] as PublicTab[])) {
+  const normFilters = (xs: unknown, max: number) => (Array.isArray(xs) ? xs.slice(0, max) : []).map((x) => normalizeFilter(x, keys)).filter((x): x is PublicFilter => !!x);
+  // 区分（未指定なら以前の「期間」の設定から開催中 / これからを組み立てる）
+  const sections: PublicSection[] = [];
+  const rawSections: unknown[] = Array.isArray(o.sections)
+    ? o.sections
+    : period
+      ? [
+          { id: "now", label: "開催中", conditions: [{ key: `f:${period.start}`, op: "until_today" }, { key: `f:${period.end}`, op: "future" }], tab: true },
+          { id: "upcoming", label: "これから", conditions: [{ key: `f:${period.start}`, op: "future" }], tab: true },
+        ]
+      : [];
+  for (const x of rawSections.slice(0, 8) as Partial<PublicSection>[]) {
+    if (!x || typeof x.id !== "string" || !SECTION_ID_RE.test(x.id) || x.id === "all" || sections.some((y) => y.id === x.id)) continue;
+    const label = typeof x.label === "string" ? x.label.trim().slice(0, 20) : "";
+    if (!label) continue;
+    sections.push({ id: x.id, label, conditions: normFilters(x.conditions, 6), tab: !!x.tab && !x.hidden, badge: !!x.badge && !x.hidden, hidden: !!x.hidden });
+  }
+  const tabs = [...sections.filter((x) => x.tab).map((x) => x.id), ...(o.all_tab !== false || !sections.some((x) => x.tab) ? ["all"] : [])];
+  const sort: Record<string, PublicSort> = {};
+  for (const t of tabs) {
     const x = o.sort?.[t];
-    sort[t] = x && sortKeyOk(x.key) ? { key: x.key, dir: x.dir === "asc" ? "asc" : "desc" } : t === "all" || period ? DEFAULT_SORT[t] : DEFAULT_SORT.all;
+    const d = DEFAULT_SORT[t] && (t === "all" || period) ? DEFAULT_SORT[t] : DEFAULT_SORT.all;
+    sort[t] = x && sortKeyOk(x.key) ? { key: x.key, dir: x.dir === "asc" ? "asc" : "desc" } : d;
   }
   const show = o.show ?? {};
   const itemOk = (k: unknown): k is string =>
@@ -94,18 +134,7 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     ];
   }
   if (!display.includes("title")) display.unshift("title"); // タイトルは必ず出す
-  const filters: PublicFilter[] = [];
-  for (const x of Array.isArray(o.filters) ? o.filters.slice(0, 10) : []) {
-    const kind = x && typeof x.key === "string" ? filterKind(x.key, keys) : null;
-    if (!kind || !FILTER_OPS[kind].includes(x.op)) continue;
-    if (x.op === "eq" || x.op === "ne") {
-      const value = typeof x.value === "string" ? x.value.trim().slice(0, 100) : "";
-      if (value) filters.push({ key: x.key, op: x.op, value });
-    } else if (x.op === "gte" || x.op === "lte") {
-      const value = typeof x.value === "number" ? x.value : Number(x.value);
-      if (x.value !== "" && x.value != null && Number.isFinite(value)) filters.push({ key: x.key, op: x.op, value });
-    } else filters.push({ key: x.key, op: x.op });
-  }
+  const filters = normFilters(o.filters, 10);
   return {
     display,
     fields: display.filter((k) => k.startsWith("f:")).map((k) => k.slice(2)),
@@ -116,9 +145,29 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     excerpt_length: clampInt(o.excerpt_length, 20, 400, 140),
     per_page: clampInt(o.per_page, 10, 100, 30),
     sort,
-    default_tab: period && TABS.includes(o.default_tab as PublicTab) ? (o.default_tab as PublicTab) : "now",
+    sections,
+    all_tab: tabs.includes("all"),
+    default_tab: tabs.includes(o.default_tab as string) ? (o.default_tab as string) : tabs[0],
     filters,
   };
+}
+
+/** 条件を1つ検証する（不正なら null） */
+function normalizeFilter(x: unknown, keys: Map<string, SetField>): PublicFilter | null {
+  const f = x as Partial<PublicFilter> | null;
+  const kind = f && typeof f.key === "string" ? filterKind(f.key, keys) : null;
+  if (!f || !kind || !FILTER_OPS[kind].includes(f.op as FilterOp)) return null;
+  const key = f.key as string;
+  if (f.op === "eq" || f.op === "ne") {
+    const value = typeof f.value === "string" ? f.value.trim().slice(0, 100) : "";
+    return value ? { key, op: f.op, value } : null;
+  }
+  if (f.op === "gte" || f.op === "lte" || f.op === "next_days" || f.op === "last_days") {
+    const value = typeof f.value === "number" ? f.value : Number(f.value);
+    if (f.value === "" || f.value == null || !Number.isFinite(value)) return null;
+    return { key, op: f.op, value: f.op === "next_days" || f.op === "last_days" ? Math.max(0, Math.min(3650, Math.round(value))) : value };
+  }
+  return { key, op: f.op as FilterOp };
 }
 
 type H = HtmlEscapedString | Promise<HtmlEscapedString>;
@@ -207,7 +256,10 @@ publicPages.get("/:slug", async (c) => {
   const shown = opts.fields.map((k) => byKey.get(k)).filter((f): f is SetField => !!f);
 
   const today = jstToday();
-  const tab: PublicTab = period ? (TABS.includes(c.req.query("tab") as PublicTab) ? (c.req.query("tab") as PublicTab) : opts.default_tab) : "all";
+  const sections = opts.sections;
+  const tabs = [...sections.filter((x) => x.tab).map((x) => ({ id: x.id, label: x.label })), ...(opts.all_tab ? [{ id: "all", label: "すべて" }] : [])];
+  const qTab = c.req.query("tab");
+  const tab: PublicTab = tabs.some((t) => t.id === qTab) ? qTab! : opts.default_tab;
   const facetValue = facet ? c.req.query("v") ?? "" : "";
   const page = Math.max(1, Math.min(100, Number(c.req.query("page") ?? 1) || 1));
 
@@ -215,74 +267,36 @@ publicPages.get("/:slug", async (c) => {
   const args: unknown[] = [st.id];
   const col = (f: SetField) => (f.type === "date" ? "value_date" : f.type === "number" || f.type === "boolean" ? "value_num" : "value_text");
   const v = (f: SetField, agg: "MIN" | "MAX") => `(SELECT ${agg}(${col(f)}) FROM item_field_values WHERE item_id = i.id AND field_id = '${f.id.replace(/[^0-9A-Za-z]/g, "")}')`;
-  if (period) {
-    const s = v(period.start, "MIN");
-    const e = v(period.end, "MAX");
-    if (tab === "now") {
-      where.push(`${s} <= ? AND COALESCE(${e}, ${s}) >= ?`);
-      args.push(today, today);
-    } else if (tab === "upcoming") {
-      where.push(`${s} > ?`);
-      args.push(today);
-    }
-  }
-  // 設定された絞り込み条件（すべてのタブにかかる）
   const IMAGE = "COALESCE(i.image_url, json_extract(i.detail_json, '$.native.extracted_fields.image'))";
   const SUMMARY =
     "COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value'), json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value'))";
+  const cond = (fl: PublicFilter) => filterSql(fl, byKey, today, { image: IMAGE, summary: SUMMARY, col });
+  // 設定された絞り込み条件（すべてのタブにかかる）
   for (const fl of opts.filters) {
-    if (fl.key === "image" || fl.key === "excerpt") {
-      const e = fl.key === "image" ? IMAGE : SUMMARY;
-      where.push(fl.op === "empty" ? `COALESCE(${e}, '') = ''` : `COALESCE(${e}, '') != ''`);
-    } else if (fl.key === "published") {
-      const d = "date(i.published_sort, '+9 hours')"; // 日本時間の日付で比べる
-      if (fl.op === "empty") where.push("i.published_sort IS NULL");
-      else if (fl.op === "not_empty") where.push("i.published_sort IS NOT NULL");
-      else {
-        where.push(`${d} ${fl.op === "future" ? ">=" : "<"} ?`);
-        args.push(today);
-      }
+    const x = cond(fl);
+    if (!x) continue;
+    where.push(x.sql);
+    args.push(...x.args);
+  }
+  // 区分：上から順に見て最初に当てはまった区分の番号（どれにも当てはまらなければ区分の数）
+  let secSql = "";
+  const secArgs: unknown[] = [];
+  if (sections.length) {
+    const whens = sections.map((sec, k) => {
+      const parts = sec.conditions.map(cond).filter((x): x is { sql: string; args: unknown[] } => !!x);
+      for (const p of parts) secArgs.push(...p.args);
+      return `WHEN ${parts.length ? parts.map((p) => `(${p.sql})`).join(" AND ") : "1"} THEN ${k}`;
+    });
+    secSql = `(CASE ${whens.join(" ")} ELSE ${sections.length} END)`;
+    const tabIdx = sections.findIndex((x) => x.id === tab);
+    if (tabIdx >= 0) {
+      where.push(`${secSql} = ${tabIdx}`);
+      args.push(...secArgs);
     } else {
-      const f = byKey.get(fl.key.slice(2));
-      if (!f) continue;
-      const has = (cond: string) => `EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND ${cond})`;
-      const c2 = `fv.${col(f)}`;
-      const nonEmpty = `${c2} IS NOT NULL${col(f) === "value_text" ? ` AND ${c2} != ''` : ""}`;
-      switch (fl.op) {
-        case "not_empty":
-          where.push(has(nonEmpty));
-          args.push(f.id);
-          break;
-        case "empty":
-          where.push(`NOT ${has(nonEmpty)}`);
-          args.push(f.id);
-          break;
-        case "future": // どれかの日付が今日以降
-          where.push(has(`${c2} >= ?`));
-          args.push(f.id, today);
-          break;
-        case "past": // 日付があり、すべて今日より前
-          where.push(`${has(nonEmpty)} AND NOT ${has(`${c2} >= ?`)}`);
-          args.push(f.id, f.id, today);
-          break;
-        case "eq":
-          where.push(has(`${c2} = ?`));
-          args.push(f.id, fl.value);
-          break;
-        case "ne":
-          where.push(`NOT ${has(`${c2} = ?`)}`);
-          args.push(f.id, fl.value);
-          break;
-        case "gte":
-        case "lte":
-          where.push(has(`${c2} ${fl.op === "gte" ? ">=" : "<="} ?`));
-          args.push(f.id, fl.value);
-          break;
-        case "true":
-        case "false":
-          where.push(has(`${c2} = ${fl.op === "true" ? 1 : 0}`));
-          args.push(f.id);
-          break;
+      const hidden = sections.flatMap((x, k) => (x.hidden ? [k] : []));
+      if (hidden.length) {
+        where.push(`${secSql} NOT IN (${hidden.join(",")})`);
+        args.push(...secArgs);
       }
     }
   }
@@ -313,11 +327,12 @@ publicPages.get("/:slug", async (c) => {
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
        ${IMAGE} AS image,
        ${SUMMARY} AS summary,
-       COALESCE(json_extract(i.detail_json, '$.published_at.value'), json_extract(i.data_json, '$.published_at.value')) AS published
+       COALESCE(json_extract(i.detail_json, '$.published_at.value'), json_extract(i.data_json, '$.published_at.value')) AS published,
+       ${secSql || "NULL"} AS sec
      FROM items i WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`,
   )
-    .bind(...args, PER_PAGE + 1, (page - 1) * PER_PAGE)
-    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null }>(),
+    .bind(...(secSql ? secArgs : []), ...args, PER_PAGE + 1, (page - 1) * PER_PAGE)
+    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null; sec: number | null }>(),
     // 情報源（購読先）
     c.env.DB.prepare(
     `SELECT s.id, s.input_url, s.last_success_at, COALESCE(s.display_title, json_extract(ch.data_json, '$.title.value'), s.input_url) AS title, json_extract(ch.data_json, '$.logo.url') AS logo,
@@ -362,7 +377,7 @@ publicPages.get("/:slug", async (c) => {
   const description = (st.public_description as string) || "";
   const q = (o: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
-    const all = { token: preview ? token : undefined, tab: period ? tab : undefined, v: facetValue || undefined, ...o };
+    const all = { token: preview ? token : undefined, tab: tabs.length > 1 ? tab : undefined, v: facetValue || undefined, ...o };
     for (const [k, val] of Object.entries(all)) if (val !== undefined && val !== "" && !(k === "page" && String(val) === "1")) p.set(k, String(val));
     const s = p.toString();
     return s ? `?${s}` : "?";
@@ -375,8 +390,10 @@ publicPages.get("/:slug", async (c) => {
     const ps = period && vals?.get(period.start.key)?.[0];
     const pe = period && vals?.get(period.end.key)?.[0];
     const date = it.published ?? it.first_seen_at;
+    const sec = it.sec != null ? sections[it.sec] : undefined;
     return {
       s,
+      badge: sec?.badge ? html`<span class="sec-badge">${sec.label}</span>` : "",
       link: safeUrl(it.primary_link),
       img: show.image ? safeUrl(it.image) : null,
       title: it.title_text ?? it.primary_link,
@@ -418,7 +435,7 @@ publicPages.get("/:slug", async (c) => {
         continue;
       }
       flush();
-      if (k === "title") out.push(html`<h2 class="entry-title">${x.title}</h2>`);
+      if (k === "title") out.push(html`<h2 class="entry-title">${x.badge}${x.title}</h2>`);
       else if (k === "period" && x.periodText) out.push(html`<p class="period">${x.periodText}</p>`);
       else if (k === "excerpt" && x.ex) out.push(html`<p class="excerpt">${x.ex}</p>`);
     }
@@ -437,7 +454,7 @@ publicPages.get("/:slug", async (c) => {
         }
         if (k === "date") return html`<span class="row-date">${x.dateEl}</span>`;
         if (k === "period") return html`<span class="row-date row-period">${x.periodText}</span>`;
-        if (k === "title") return html`<span class="row-title">${x.title}</span>`;
+        if (k === "title") return html`<span class="row-title">${x.badge}${x.title}</span>`;
         if (k === "source") return x.sourceEl ? html`<span class="row-source">${x.sourceEl}</span>` : "";
         if (k === "excerpt") return x.ex ? html`<span class="row-excerpt">${x.ex}</span>` : "";
         return "";
@@ -477,7 +494,7 @@ publicPages.get("/:slug", async (c) => {
               if (f) return html`<td>${fieldText(x, f)}</td>`;
               if (k === "date") return html`<td class="nowrap">${x.dateEl}</td>`;
               if (k === "period") return html`<td class="nowrap">${x.periodText}</td>`;
-              if (k === "title") return html`<td class="t-title">${x.link ? html`<a href="${x.link}" target="_blank" rel="noopener">${x.title}</a>` : x.title}</td>`;
+              if (k === "title") return html`<td class="t-title">${x.badge}${x.link ? html`<a href="${x.link}" target="_blank" rel="noopener">${x.title}</a>` : x.title}</td>`;
               if (k === "source") return html`<td>${x.sourceEl}</td>`;
               if (k === "excerpt") return html`<td class="t-excerpt">${x.ex ?? ""}</td>`;
               return html`<td></td>`;
@@ -513,13 +530,9 @@ publicPages.get("/:slug", async (c) => {
           </div>
         </header>
         <main class="wrap">
-          ${period
-            ? html`<nav class="tabs" aria-label="期間">
-                ${[
-                  ["now", "開催中"],
-                  ["upcoming", "これから"],
-                  ["all", "すべて"],
-                ].map(([k, l]) => html`<a href="${q({ tab: k, page: 1 })}" class="${tab === k ? "on" : ""}" ${tab === k ? raw('aria-current="page"') : ""}>${l}</a>`)}
+          ${tabs.length > 1
+            ? html`<nav class="tabs" aria-label="区分">
+                ${tabs.map((t) => html`<a href="${q({ tab: t.id, page: 1 })}" class="${tab === t.id ? "on" : ""}" ${tab === t.id ? raw('aria-current="page"') : ""}>${t.label}</a>`)}
               </nav>`
             : ""}
           ${chips.length
@@ -528,7 +541,7 @@ publicPages.get("/:slug", async (c) => {
                 ${chips.map((ch) => html`<a href="${q({ v: ch.value, page: 1 })}" class="${facetValue === ch.value ? "on" : ""}">${ch.value}<span>${ch.count}</span></a>`)}
               </nav>`
             : ""}
-          ${items.length ? listEl() : html`<p class="empty">${tab === "now" ? "現在開催中の情報はありません。" : tab === "upcoming" ? "予定されている情報はありません。" : "まだ情報がありません。"}</p>`}
+          ${items.length ? listEl() : html`<p class="empty">${tab === "all" ? "まだ情報がありません。" : `「${tabs.find((t) => t.id === tab)?.label ?? ""}」に当てはまる情報はありません。`}</p>`}
           ${page > 1 || rs.results.length > PER_PAGE
             ? html`<nav class="pager">
                 ${page > 1 ? html`<a href="${q({ page: page - 1 })}">← 前へ</a>` : html`<span></span>`}
@@ -548,6 +561,79 @@ publicPages.get("/:slug", async (c) => {
     ),
   );
 });
+
+const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+
+/**
+ * 条件1つ分の SQL（items i を参照）。日付は日本時間の今日（today）と比べる。
+ * future：今日以降 / past：昨日まで（値があり、すべて今日より前）/ until_today：今日まで / next_days：今日から N 日後まで / last_days：N 日前から今日まで
+ */
+function filterSql(
+  fl: PublicFilter,
+  byKey: Map<string, SetField>,
+  today: string,
+  x: { image: string; summary: string; col: (f: SetField) => string },
+): { sql: string; args: unknown[] } | null {
+  const n = Number(fl.value ?? 0);
+  // 日付の比較：[比較式, 引数]
+  const dateCmp = (e: string): [string, unknown[]] | null => {
+    switch (fl.op) {
+      case "future":
+        return [`${e} >= ?`, [today]];
+      case "until_today":
+        return [`${e} <= ?`, [today]];
+      case "next_days":
+        return [`${e} BETWEEN ? AND ?`, [today, addDays(today, n)]];
+      case "last_days":
+        return [`${e} BETWEEN ? AND ?`, [addDays(today, -n), today]];
+      default:
+        return null;
+    }
+  };
+  if (fl.key === "image" || fl.key === "excerpt") {
+    const e = fl.key === "image" ? x.image : x.summary;
+    return { sql: fl.op === "empty" ? `COALESCE(${e}, '') = ''` : `COALESCE(${e}, '') != ''`, args: [] };
+  }
+  if (fl.key === "published") {
+    const d = "date(i.published_sort, '+9 hours')"; // 日本時間の日付で比べる
+    if (fl.op === "empty") return { sql: "i.published_sort IS NULL", args: [] };
+    if (fl.op === "not_empty") return { sql: "i.published_sort IS NOT NULL", args: [] };
+    if (fl.op === "past") return { sql: `${d} < ?`, args: [today] };
+    const c = dateCmp(d);
+    return c ? { sql: c[0], args: c[1] } : null;
+  }
+  const f = byKey.get(fl.key.slice(2));
+  if (!f) return null;
+  const has = (cond: string) => `EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND ${cond})`;
+  const c2 = `fv.${x.col(f)}`;
+  const nonEmpty = `${c2} IS NOT NULL${x.col(f) === "value_text" ? ` AND ${c2} != ''` : ""}`;
+  switch (fl.op) {
+    case "not_empty":
+      return { sql: has(nonEmpty), args: [f.id] };
+    case "empty":
+      return { sql: `NOT ${has(nonEmpty)}`, args: [f.id] };
+    case "past": // 日付があり、すべて今日より前
+      return { sql: `${has(nonEmpty)} AND NOT ${has(`${c2} >= ?`)}`, args: [f.id, f.id, today] };
+    case "future": // どれかの日付が条件に当てはまる
+    case "until_today":
+    case "next_days":
+    case "last_days": {
+      const c = dateCmp(c2)!;
+      return { sql: has(c[0]), args: [f.id, ...c[1]] };
+    }
+    case "eq":
+      return { sql: has(`${c2} = ?`), args: [f.id, fl.value] };
+    case "ne":
+      return { sql: `NOT ${has(`${c2} = ?`)}`, args: [f.id, fl.value] };
+    case "gte":
+    case "lte":
+      return { sql: has(`${c2} ${fl.op === "gte" ? ">=" : "<="} ?`), args: [f.id, fl.value] };
+    case "true":
+    case "false":
+      return { sql: has(`${c2} = ${fl.op === "true" ? 1 : 0}`), args: [f.id] };
+  }
+  return null;
+}
 
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -613,6 +699,7 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .source { display: inline-flex; align-items: center; gap: 6px; }
 .source img { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; }
 .entry-title { font-size: 19px; line-height: 1.5; margin: 4px 0 4px; font-weight: 600; overflow-wrap: anywhere; }
+.sec-badge { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; line-height: 1.6; vertical-align: 2px; white-space: nowrap; }
 .period { margin: 0 0 4px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .excerpt { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 .fields { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; font-size: 13px; }

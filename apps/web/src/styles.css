@@ -154,6 +154,9 @@ button.link:hover { text-decoration: underline; }
 .layout-table i { background: linear-gradient(90deg, var(--panel) 0 30%, var(--line) 30% 31%, var(--panel) 31% 65%, var(--line) 65% 66%, var(--panel) 66%); }
 .sort-rows, .filter-rows { display: flex; flex-direction: column; gap: 6px; }
 .sort-tab { min-width: 5em; }
+.sections-editor { display: flex; flex-direction: column; gap: 8px; }
+.section-card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.publish-form .section-card > .row > input[type=text] { flex: 0 1 180px; }
 .publish-form textarea { min-height: 0; font-family: inherit; font-size: 13px; }
 .publish-form .row > select, .publish-form .row > input[type=text] { width: auto; flex: 1 1 180px; min-width: 0; }
 .publish-form .sort-rows .row > select, .publish-form .filter-rows .row > select { flex: 0 1 auto; }

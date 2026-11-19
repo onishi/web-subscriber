@@ -599,8 +599,6 @@ const PUBLISH_ERROR: Record<string, string> = {
   slug_taken: "この URL は別のセットで使われています",
 };
 
-type SortTab = "now" | "upcoming" | "all";
-const TAB_LABEL: Record<SortTab, string> = { now: "開催中", upcoming: "これから", all: "すべて" };
 const LAYOUT_CHOICES: [string, string, string][] = [
   ["list", "リスト", "1件ずつ横長に。概要と画像も読める"],
   ["cards", "カード", "画像を大きく、タイル状に並べる"],
@@ -609,12 +607,17 @@ const LAYOUT_CHOICES: [string, string, string][] = [
 ];
 
 /** セットの公開ページ（radar.wagaya.org/<slug>）の設定 */
-type FilterOp = "not_empty" | "empty" | "future" | "past" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
+type FilterOp = "not_empty" | "empty" | "future" | "past" | "until_today" | "next_days" | "last_days" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
 type FilterKind = "date" | "text" | "list" | "number" | "boolean" | "plain";
 type Filter = { key: string; op: FilterOp; value?: string | number };
+type Section = { id: string; label: string; conditions: Filter[]; tab: boolean; badge: boolean; hidden: boolean };
+type Sort = { key: string; dir: string };
+/** 値を入力する条件 */
+const OP_WITH_VALUE: FilterOp[] = ["eq", "ne", "gte", "lte", "next_days", "last_days"];
+const newSectionId = () => `s${Date.now().toString(36).slice(-6)}`;
 // サーバー側（public.ts の FILTER_OPS）と合わせる
 const FILTER_OPS: Record<FilterKind, FilterOp[]> = {
-  date: ["not_empty", "empty", "future", "past"],
+  date: ["not_empty", "empty", "future", "past", "until_today", "next_days", "last_days"],
   text: ["not_empty", "empty", "eq", "ne"],
   list: ["not_empty", "empty", "eq", "ne"],
   number: ["not_empty", "empty", "gte", "lte"],
@@ -624,8 +627,11 @@ const FILTER_OPS: Record<FilterKind, FilterOp[]> = {
 const FILTER_OP_LABEL: Record<FilterOp, string> = {
   not_empty: "空ではない",
   empty: "空",
-  future: "未来",
-  past: "過去",
+  future: "未来（今日から）",
+  past: "過去（昨日まで）",
+  until_today: "今日まで（今日を含む）",
+  next_days: "日後まで（今日から）",
+  last_days: "日前から今日まで",
   eq: "と一致する",
   ne: "と一致しない",
   gte: "以上",
@@ -633,6 +639,150 @@ const FILTER_OP_LABEL: Record<FilterOp, string> = {
   true: "はい",
   false: "いいえ",
 };
+
+/** 条件の一覧（項目・条件・値）。公開ページの「表示する条件」と区分の条件で使う */
+function ConditionRows({
+  value,
+  onChange,
+  keys,
+  max,
+  addLabel = "＋ 条件を追加",
+  note,
+}: {
+  value: Filter[];
+  onChange: (v: Filter[]) => void;
+  keys: [string, string, FilterKind][];
+  max: number;
+  addLabel?: string;
+  note?: string;
+}) {
+  const kindOf = new Map(keys.map(([k, , t]) => [k, t]));
+  const setAt = (i: number, x: Partial<Filter>) => onChange(value.map((f, j) => (j === i ? { ...f, ...x } : f)));
+  return (
+    <div className="filter-rows">
+      {value.map((f, i) => {
+        const ops = FILTER_OPS[kindOf.get(f.key) ?? "plain"];
+        const days = f.op === "next_days" || f.op === "last_days";
+        return (
+          <div key={i} className="row">
+            <select
+              value={f.key}
+              onChange={(e) => {
+                const k = e.target.value;
+                const o = FILTER_OPS[kindOf.get(k) ?? "plain"];
+                setAt(i, { key: k, op: o.includes(f.op) ? f.op : o[0], value: undefined });
+              }}
+            >
+              {!kindOf.has(f.key) && <option value={f.key}>（削除された項目）</option>}
+              {keys.map(([k, l]) => (
+                <option key={k} value={k}>
+                  {l}
+                </option>
+              ))}
+            </select>
+            <span className="muted">が</span>
+            {OP_WITH_VALUE.includes(f.op) && (
+              <input
+                type={f.op === "eq" || f.op === "ne" ? "text" : "number"}
+                min={days ? 0 : undefined}
+                style={{ width: f.op === "eq" || f.op === "ne" ? 160 : days ? 64 : 96 }}
+                value={f.value ?? ""}
+                placeholder={days ? "日数" : "値"}
+                onChange={(e) => setAt(i, { value: e.target.value })}
+              />
+            )}
+            <select
+              value={f.op}
+              onChange={(e) => {
+                const op = e.target.value as FilterOp;
+                // 日数の条件は空のままだと保存時に捨てられるので、7 日を入れておく
+                setAt(i, { op, value: (op === "next_days" || op === "last_days") && (f.value === undefined || f.value === "") ? 7 : f.value });
+              }}
+            >
+              {ops.map((o) => (
+                <option key={o} value={o}>
+                  {OP_WITH_VALUE.includes(o) && o !== f.op ? (o === "next_days" ? "N " : o === "last_days" ? "N " : "") : ""}
+                  {FILTER_OP_LABEL[o]}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="link small" title="この条件を外す" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+              ✕
+            </button>
+          </div>
+        );
+      })}
+      <div className="row">
+        <button type="button" className="link small" disabled={value.length >= max} onClick={() => onChange([...value, { key: keys[0][0], op: FILTER_OPS[keys[0][2]][0] }])}>
+          {addLabel}
+        </button>
+        {note && <span className="muted">{note}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** 以前の「期間」の設定から作る区分（サーバー側 normalizePublicOptions と合わせる） */
+const periodSections = (start: string, end: string): Section[] => [
+  { id: "now", label: "開催中", conditions: [{ key: `f:${start}`, op: "until_today" }, { key: `f:${end}`, op: "future" }], tab: true, badge: false, hidden: false },
+  { id: "upcoming", label: "これから", conditions: [{ key: `f:${start}`, op: "future" }], tab: true, badge: false, hidden: false },
+];
+
+/** 区分の編集 */
+function SectionsEditor({ value, onChange, keys }: { value: Section[]; onChange: (v: Section[]) => void; keys: [string, string, FilterKind][] }) {
+  const setAt = (i: number, x: Partial<Section>) => onChange(value.map((s, j) => (j === i ? { ...s, ...x } : s)));
+  const move = (i: number, d: -1 | 1) => {
+    const j = i + d;
+    if (j < 0 || j >= value.length) return;
+    const a = [...value];
+    [a[i], a[j]] = [a[j], a[i]];
+    onChange(a);
+  };
+  return (
+    <div className="sections-editor">
+      {value.map((s, i) => (
+        <div key={s.id} className="section-card">
+          <div className="row">
+            <span className="muted small">{i + 1}.</span>
+            <input type="text" value={s.label} maxLength={20} placeholder="区分の名前（例：開催中）" style={{ width: 180 }} onChange={(e) => setAt(i, { label: e.target.value })} />
+            <label className="row small">
+              <input type="checkbox" checked={s.tab && !s.hidden} disabled={s.hidden} onChange={(e) => setAt(i, { tab: e.target.checked })} /> タブにする
+            </label>
+            <label className="row small">
+              <input type="checkbox" checked={s.badge && !s.hidden} disabled={s.hidden} onChange={(e) => setAt(i, { badge: e.target.checked })} /> バッジを付ける
+            </label>
+            <label className="row small">
+              <input type="checkbox" checked={s.hidden} onChange={(e) => setAt(i, { hidden: e.target.checked })} /> 表示しない
+            </label>
+            <span className="spacer" />
+            <button type="button" className="link small" title="上へ" disabled={i === 0} onClick={() => move(i, -1)}>
+              ↑
+            </button>
+            <button type="button" className="link small" title="下へ" disabled={i === value.length - 1} onClick={() => move(i, 1)}>
+              ↓
+            </button>
+            <button type="button" className="link small" title="この区分を削除" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+              ✕
+            </button>
+          </div>
+          <ConditionRows
+            value={s.conditions}
+            onChange={(conditions) => setAt(i, { conditions })}
+            keys={keys}
+            max={6}
+            note={s.conditions.length ? "すべてを満たすと、この区分に入ります" : "条件がないと、ここまでに当てはまらなかったものがすべて入ります"}
+          />
+        </div>
+      ))}
+      <div className="row">
+        <button type="button" className="link small" disabled={value.length >= 8} onClick={() => onChange([...value, { id: newSectionId(), label: "", conditions: [], tab: true, badge: false, hidden: false }])}>
+          ＋ 区分を追加
+        </button>
+        <span className="muted">上から順に条件を見て、最初に当てはまった区分に入れます（下の区分には出ません）。どれにも当てはまらないものは「すべて」にだけ出ます</span>
+      </div>
+    </div>
+  );
+}
 
 function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; reload: () => Promise<unknown> }) {
   const opts = (() => {
@@ -666,11 +816,17 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     layout: (opts.layout ?? "list") as string,
     excerpt_length: (opts.excerpt_length ?? 140) as number,
     per_page: (opts.per_page ?? 30) as number,
-    sort: { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" }, ...(opts.sort ?? {}) } as Record<SortTab, { key: string; dir: string }>,
-    default_tab: (opts.default_tab ?? "now") as SortTab,
+    sort: { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" }, ...(opts.sort ?? {}) } as Record<string, Sort>,
+    default_tab: (opts.default_tab ?? "") as string,
     filters: (Array.isArray(opts.filters) ? opts.filters : []) as Filter[],
+    sections: (Array.isArray(opts.sections) ? opts.sections : opts.period ? periodSections(opts.period.start, opts.period.end) : []) as Section[],
+    all_tab: opts.all_tab !== false,
   });
   const hasPeriod = !!(form.periodStart && form.periodEnd);
+  // タブ：タブにする区分 ＋「すべて」（区分のタブがなければ「すべて」だけ）
+  const tabSections = form.sections.filter((x) => x.tab && !x.hidden && x.label.trim());
+  const tabs: [string, string][] = [...tabSections.map((x) => [x.id, x.label.trim()] as [string, string]), ...(form.all_tab || !tabSections.length ? ([["all", "すべて"]] as [string, string][]) : [])];
+  const sortOf = (t: string): Sort => form.sort[t] ?? { key: "published", dir: "desc" };
   const sortKeys: [string, string][] = [
     ["published", "日付"],
     ["first_seen", "収集した日"],
@@ -696,7 +852,6 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     ...fields.map((f) => [`f:${f.key}`, f.label, f.type as FilterKind] as [string, string, FilterKind]),
   ];
   const kindOf = new Map(filterKeys.map(([k, , t]) => [k, t]));
-  const setFilter = (i: number, x: Partial<Filter>) => setForm({ ...form, filters: form.filters.map((f, j) => (j === i ? { ...f, ...x } : f)) });
   const shownItems = form.display.filter((k) => label.has(k));
   const move = (k: string, d: -1 | 1) => {
     const a = [...shownItems];
@@ -731,9 +886,13 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 show: { image: form.image },
                 excerpt_length: form.excerpt_length,
                 per_page: form.per_page,
-                sort: hasPeriod ? form.sort : { all: form.sort.all },
-                default_tab: form.default_tab,
+                sort: Object.fromEntries(tabs.map(([t]) => [t, sortOf(t)])),
+                default_tab: tabs.some(([t]) => t === form.default_tab) ? form.default_tab : tabs[0][0],
                 filters: form.filters.filter((f) => kindOf.has(f.key)),
+                sections: form.sections
+                  .filter((x) => x.label.trim())
+                  .map((x) => ({ ...x, label: x.label.trim(), conditions: x.conditions.filter((f) => kindOf.has(f.key)) })),
+                all_tab: form.all_tab,
               },
             },
           });
@@ -782,7 +941,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                   </option>
                 ))}
               </select>
-              <span className="muted">「開催中 / これから / すべて」のタブを表示します</span>
+              <span className="muted">「期間」の表示（開始〜終了）と、並び順の「期間の開始・終了」に使います</span>
             </>
           ) : (
             <span className="muted">日付のフィールドが2つ（開始・終了）あると設定できます</span>
@@ -861,69 +1020,40 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
           <span className="muted">上から順に表示します。表では左からの列の順になります。</span>
         </div>
         <div>表示する条件</div>
-        <div className="filter-rows">
-          {form.filters.map((f, i) => {
-            const ops = FILTER_OPS[kindOf.get(f.key) ?? "plain"];
-            return (
-              <div key={i} className="row">
-                <select
-                  value={f.key}
-                  onChange={(e) => {
-                    const k = e.target.value;
-                    const o = FILTER_OPS[kindOf.get(k) ?? "plain"];
-                    setFilter(i, { key: k, op: o.includes(f.op) ? f.op : o[0], value: undefined });
-                  }}
-                >
-                  {!kindOf.has(f.key) && <option value={f.key}>（削除された項目）</option>}
-                  {filterKeys.map(([k, l]) => (
-                    <option key={k} value={k}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-                <span className="muted">が</span>
-                {(f.op === "eq" || f.op === "ne" || f.op === "gte" || f.op === "lte") && (
-                  <input
-                    type={f.op === "gte" || f.op === "lte" ? "number" : "text"}
-                    style={{ width: f.op === "gte" || f.op === "lte" ? 96 : 160 }}
-                    value={f.value ?? ""}
-                    placeholder="値"
-                    onChange={(e) => setFilter(i, { value: e.target.value })}
-                  />
-                )}
-                <select value={f.op} onChange={(e) => setFilter(i, { op: e.target.value as FilterOp })}>
-                  {ops.map((o) => (
-                    <option key={o} value={o}>
-                      {FILTER_OP_LABEL[o]}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" className="link small" title="この条件を外す" onClick={() => setForm({ ...form, filters: form.filters.filter((_, j) => j !== i) })}>
-                  ✕
-                </button>
-              </div>
-            );
-          })}
-          <div className="row">
-            <button type="button" className="link small" disabled={form.filters.length >= 10} onClick={() => setForm({ ...form, filters: [...form.filters, { key: "published", op: "not_empty" }] })}>
-              ＋ 条件を追加
+        <ConditionRows
+          value={form.filters}
+          onChange={(filters) => setForm({ ...form, filters })}
+          keys={filterKeys}
+          max={10}
+          note="すべての条件を満たす情報だけを表示します（どのタブにもかかります）"
+        />
+        <div>区分</div>
+        <div>
+          <SectionsEditor value={form.sections} onChange={(sections) => setForm({ ...form, sections })} keys={filterKeys} />
+          {hasPeriod && form.sections.length === 0 && (
+            <button type="button" className="link small" onClick={() => setForm({ ...form, sections: periodSections(form.periodStart, form.periodEnd) })}>
+              期間から「開催中 / これから」を作る
             </button>
-            <span className="muted">すべての条件を満たす情報だけを表示します（どのタブにもかかります）。日付の「未来」は今日を含みます</span>
-          </div>
+          )}
+          {tabSections.length > 0 && (
+            <label className="row small">
+              <input type="checkbox" checked={form.all_tab} onChange={(e) => setForm({ ...form, all_tab: e.target.checked })} /> 「すべて」タブも出す
+            </label>
+          )}
         </div>
         <div>並び順</div>
         <div className="sort-rows">
-          {(hasPeriod ? (["now", "upcoming", "all"] as SortTab[]) : (["all"] as SortTab[])).map((t) => (
+          {tabs.map(([t, l]) => (
             <div key={t} className="row">
-              {hasPeriod && <span className="sort-tab">{TAB_LABEL[t]}</span>}
-              <select value={form.sort[t].key} onChange={(e) => setForm({ ...form, sort: { ...form.sort, [t]: { ...form.sort[t], key: e.target.value } } })}>
+              {tabs.length > 1 && <span className="sort-tab">{l}</span>}
+              <select value={sortOf(t).key} onChange={(e) => setForm({ ...form, sort: { ...form.sort, [t]: { ...sortOf(t), key: e.target.value } } })}>
                 {sortKeys.map(([k, l]) => (
                   <option key={k} value={k}>
                     {l}
                   </option>
                 ))}
               </select>
-              <select value={form.sort[t].dir} onChange={(e) => setForm({ ...form, sort: { ...form.sort, [t]: { ...form.sort[t], dir: e.target.value } } })}>
+              <select value={sortOf(t).dir} onChange={(e) => setForm({ ...form, sort: { ...form.sort, [t]: { ...sortOf(t), dir: e.target.value } } })}>
                 <option value="desc">降順（新しい・大きい順）</option>
                 <option value="asc">昇順（古い・小さい順）</option>
               </select>
@@ -931,13 +1061,13 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
           ))}
           <span className="muted">値のない情報は最後に並びます</span>
         </div>
-        {hasPeriod && (
+        {tabs.length > 1 && (
           <>
             <div>最初に開くタブ</div>
-            <select value={form.default_tab} onChange={(e) => setForm({ ...form, default_tab: e.target.value as SortTab })}>
-              {(["now", "upcoming", "all"] as SortTab[]).map((t) => (
+            <select value={tabs.some(([t]) => t === form.default_tab) ? form.default_tab : tabs[0][0]} onChange={(e) => setForm({ ...form, default_tab: e.target.value })}>
+              {tabs.map(([t, l]) => (
                 <option key={t} value={t}>
-                  {TAB_LABEL[t]}
+                  {l}
                 </option>
               ))}
             </select>

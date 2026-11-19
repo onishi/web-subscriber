@@ -322,6 +322,39 @@ userApi.get("/artifacts/*", async (c) => {
 });
 
 // ---- item ----
+/** item ごと・セットごとのカスタムフィールドの値（表示用）と、手で直したフィールドのキー */
+async function fieldValuesFor(env: Env, itemIds: string[], fields: SetField[]) {
+  const ph = itemIds.map(() => "?").join(",");
+  const setIds = [...new Set(fields.map((f) => f.set_id))];
+  const sph = setIds.map(() => "?").join(",");
+  const [vals, locks] = await Promise.all([
+    env.DB.prepare(`SELECT item_id, field_id, ord, value_text, value_num, value_date FROM item_field_values WHERE set_id IN (${sph}) AND item_id IN (${ph}) ORDER BY ord`)
+      .bind(...setIds, ...itemIds)
+      .all<{ item_id: string; field_id: string; ord: number; value_text: string | null; value_num: number | null; value_date: string | null }>(),
+    env.DB.prepare(`SELECT item_id, field_id FROM item_field_locks WHERE set_id IN (${sph}) AND item_id IN (${ph})`)
+      .bind(...setIds, ...itemIds)
+      .all<{ item_id: string; field_id: string }>(),
+  ]);
+  const byId = new Map(fields.map((f) => [f.id, f]));
+  const out = new Map<string, Map<string, { values: Record<string, unknown[]>; manual: string[] }>>();
+  const slot = (itemId: string, setId: string) => {
+    const m = out.get(itemId) ?? new Map();
+    out.set(itemId, m);
+    const v = m.get(setId) ?? { values: {}, manual: [] };
+    m.set(setId, v);
+    return v;
+  };
+  for (const v of vals.results) {
+    const f = byId.get(v.field_id);
+    if (f) (slot(v.item_id, f.set_id).values[f.key] ??= []).push(displayValue(f.type, v));
+  }
+  for (const l of locks.results) {
+    const f = byId.get(l.field_id);
+    if (f) slot(l.item_id, f.set_id).manual.push(f.key);
+  }
+  return out;
+}
+
 userApi.get("/items", async (c) => {
   const uid = c.get("userId");
   const view = c.req.query("view") ?? "new"; // new（基準データも含め検出・更新の新しい順）| all | baseline | updated
@@ -357,7 +390,9 @@ userApi.get("/items", async (c) => {
     }
   }
   args.push(limit + 1, offset);
-  const rs = await c.env.DB.prepare(
+  // 購読先の一覧では、その購読先が入っているセットのカスタムフィールドも付ける（一覧と並行して取る）
+  const [rs, subFields] = await Promise.all([
+    c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.published_sort, i.is_baseline, i.image_url, i.first_seen_at, i.last_seen_at, i.last_changed_at, i.revision_count,
        COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value')) AS summary,
        CASE WHEN json_extract(i.detail_json, '$.summary.value') IS NOT NULL THEN json_extract(i.detail_json, '$.summary.type') ELSE json_extract(i.data_json, '$.summary.type') END AS summary_type,
@@ -369,7 +404,18 @@ userApi.get("/items", async (c) => {
      ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY ${order} LIMIT ? OFFSET ?`,
   )
     .bind(...args)
-    .all<Record<string, unknown>>();
+    .all<Record<string, unknown>>(),
+    sub && !setId
+      ? c.env.DB.prepare(
+          `SELECT f.id, f.set_id, f.key, f.label, f.type, f.description, f.position, st.name AS set_name
+           FROM set_fields f JOIN set_members m ON m.set_id = f.set_id JOIN sets st ON st.id = f.set_id
+           WHERE m.subscription_id = ? ORDER BY st.position, st.created_at, f.position, f.created_at`,
+        )
+          .bind(sub)
+          .all<SetField & { set_name: string }>()
+          .then((r) => r.results)
+      : Promise.resolve([] as (SetField & { set_name: string })[]),
+  ]);
   const items: Record<string, unknown>[] = rs.results.slice(0, limit).map((r) => ({
     ...r,
     published_at: json(r.published_at as string, null),
@@ -381,29 +427,33 @@ userApi.get("/items", async (c) => {
   }));
   // セット表示ではカスタムフィールドの値を付ける
   if (setId && fields.length && items.length) {
-    const [vals, locks] = await Promise.all([
-      c.env.DB.prepare(`SELECT item_id, field_id, ord, value_text, value_num, value_date FROM item_field_values WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")}) ORDER BY ord`)
-      .bind(setId, ...items.map((i) => i.id))
-      .all<{ item_id: string; field_id: string; ord: number; value_text: string | null; value_num: number | null; value_date: string | null }>(),
-      c.env.DB.prepare(`SELECT item_id, field_id FROM item_field_locks WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")})`)
-      .bind(setId, ...items.map((i) => i.id))
-      .all<{ item_id: string; field_id: string }>(),
-    ]);
-    const byId = new Map(fields.map((f) => [f.id, f]));
-    const manual = new Map<string, string[]>();
-    for (const l of locks.results) {
-      const f = byId.get(l.field_id);
-      if (f) manual.set(l.item_id, [...(manual.get(l.item_id) ?? []), f.key]);
-    }
-    const per = new Map<string, Record<string, unknown[]>>();
-    for (const v of vals.results) {
-      const f = byId.get(v.field_id);
-      if (!f) continue;
-      const m = per.get(v.item_id) ?? {};
-      (m[f.key] ??= []).push(displayValue(f.type, v));
-      per.set(v.item_id, m);
-    }
-    return c.json({ items: items.map((i) => ({ ...i, fields: per.get(i.id as string) ?? {}, fields_manual: manual.get(i.id as string) ?? [] })), has_more: rs.results.length > limit, next_offset: offset + limit });
+    const vals = await fieldValuesFor(c.env, items.map((i) => i.id as string), fields);
+    return c.json({
+      items: items.map((i) => ({ ...i, fields: vals.get(i.id as string)?.get(setId)?.values ?? {}, fields_manual: vals.get(i.id as string)?.get(setId)?.manual ?? [] })),
+      has_more: rs.results.length > limit,
+      next_offset: offset + limit,
+    });
+  }
+  if (subFields.length && items.length) {
+    const vals = await fieldValuesFor(c.env, items.map((i) => i.id as string), subFields);
+    const sets = [...new Map(subFields.map((f) => [f.set_id, f.set_name])).entries()].map(([id, name]) => ({
+      id,
+      name,
+      fields: subFields.filter((f) => f.set_id === id).map(({ id, key, label, type, description }) => ({ id, key, label, type, description })),
+    }));
+    return c.json({
+      items: items.map((i) => {
+        const per = vals.get(i.id as string);
+        return {
+          ...i,
+          set_fields: Object.fromEntries([...(per ?? [])].map(([sid, v]) => [sid, v.values])),
+          set_fields_manual: Object.fromEntries([...(per ?? [])].map(([sid, v]) => [sid, v.manual])),
+        };
+      }),
+      field_sets: sets,
+      has_more: rs.results.length > limit,
+      next_offset: offset + limit,
+    });
   }
   return c.json({ items, has_more: rs.results.length > limit, next_offset: offset + limit });
 });
