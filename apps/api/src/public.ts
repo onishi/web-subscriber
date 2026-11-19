@@ -382,12 +382,14 @@ publicPages.get("/:slug", async (c) => {
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
        ${IMAGE} AS image,
        ${SUMMARY} AS summary,
+       json_extract(i.data_json, '$.summary.value') AS summary_list,
+       COALESCE(json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value')) AS content,
        COALESCE(json_extract(i.detail_json, '$.published_at.value'), json_extract(i.data_json, '$.published_at.value')) AS published,
        ${secSql || "NULL"} AS sec
      FROM items i WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`,
   )
     .bind(...(secSql ? secArgs : []), ...args, PER_PAGE + 1, calendar ? 0 : (page - 1) * PER_PAGE)
-    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null; sec: number | null }>(),
+    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; summary_list: string | null; content: string | null; published: string | null; sec: number | null }>(),
     // 情報源（購読先）
     c.env.DB.prepare(
     `SELECT s.id, s.input_url, s.last_success_at, COALESCE(s.display_title, json_extract(ch.data_json, '$.title.value'), s.input_url) AS title, json_extract(ch.data_json, '$.logo.url') AS logo,
@@ -457,7 +459,8 @@ publicPages.get("/:slug", async (c) => {
       dateEl: show.date ? html`<time datetime="${date.slice(0, 10)}">${fmtDate(date)}</time>` : "",
       sourceEl: show.source && s ? html`<span class="source">${safeUrl(s.logo) ? html`<img src="${safeUrl(s.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ""}${s.title}</span>` : "",
       periodText: show.period && (ps || pe) ? `${fmtDate(String(ps ?? ""))}${pe && pe !== ps ? ` – ${fmtDate(String(pe))}` : ""}` : "",
-      ex: show.excerpt ? excerpt(it.summary, opts.excerpt_length) : null,
+      // 区切り線（「——」など）だけの概要は飛ばし、一覧の概要・本文を使う
+      ex: show.excerpt ? excerpt([it.summary, it.summary_list, it.content].find((x) => !!x && /[\p{L}\p{N}]/u.test(stripTags(x))) ?? null, opts.excerpt_length) : null,
     };
   };
   const wrapLink = (link: string | null, cls: string, body: H) =>
@@ -521,7 +524,13 @@ publicPages.get("/:slug", async (c) => {
       return html`<li class="card">${wrapLink(
         x.link,
         "card-link",
-        html`${x.img ? html`<img class="card-img" src="${x.img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+        // 画像がない（または読み込めない）ときも同じ大きさの枠に情報源の名前を出して、カードの高さをそろえる
+        html`${show.image
+          ? html`<div class="card-media">
+              <span class="card-noimg">${x.s?.title ?? ""}</span>
+              ${x.img ? html`<img class="card-img" src="${x.img}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+            </div>`
+          : ""}
           <div class="card-body">${blocks(x)}</div>`,
       )}</li>`;
     }
@@ -863,7 +872,9 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .cards { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px; }
 .card-link { display: flex; flex-direction: column; height: 100%; text-decoration: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 a.card-link:hover .entry-title { color: var(--accent); }
-.card-img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; background: var(--line); }
+.card-media { position: relative; aspect-ratio: 16 / 10; background: var(--accent-weak); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.card-noimg { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px; text-align: center; color: var(--accent); font-size: 14px; font-weight: 600; opacity: .8; }
+.card-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--line); }
 .card-body { padding: 14px 16px 16px; }
 .card .entry-title { font-size: 17px; }
 .rows { list-style: none; margin: 12px 0 0; padding: 0; }
