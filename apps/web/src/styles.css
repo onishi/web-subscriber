@@ -192,3 +192,5 @@ kbd { display: inline-block; min-width: 1.6em; padding: 0 5px; border: 1px solid
 @media (hover: none) {
   .shortcut-link { display: none; }
 }
+.review-box { margin: 8px 0 12px; }
+.review-box textarea { min-height: 0; font-family: inherit; font-size: 13px; display: block; width: 100%; margin-top: 4px; }

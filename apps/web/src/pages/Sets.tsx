@@ -821,12 +821,20 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     filters: (Array.isArray(opts.filters) ? opts.filters : []) as Filter[],
     sections: (Array.isArray(opts.sections) ? opts.sections : opts.period ? periodSections(opts.period.start, opts.period.end) : []) as Section[],
     all_tab: opts.all_tab !== false,
+    group_sections: !!opts.group_sections,
   });
   const hasPeriod = !!(form.periodStart && form.periodEnd);
   // タブ：タブにする区分 ＋「すべて」（区分のタブがなければ「すべて」だけ）
   const tabSections = form.sections.filter((x) => x.tab && !x.hidden && x.label.trim());
   const tabs: [string, string][] = [...tabSections.map((x) => [x.id, x.label.trim()] as [string, string]), ...(form.all_tab || !tabSections.length ? ([["all", "すべて"]] as [string, string][]) : [])];
   const sortOf = (t: string): Sort => form.sort[t] ?? { key: "published", dir: "desc" };
+  // 見出しでまとめるときは、各区分の中の並び順も設定する
+  const grouped = form.group_sections && tabs.some(([t]) => t === "all") && form.sections.some((x) => !x.hidden && x.label.trim());
+  const sortRows: [string, string][] = [
+    ...tabs.filter(([t]) => t !== "all"),
+    ...(grouped ? form.sections.filter((x) => !x.hidden && x.label.trim() && !x.tab).map((x) => [x.id, `${x.label.trim()}（見出し）`] as [string, string]) : []),
+    ...tabs.filter(([t]) => t === "all").map(([t, l]) => [t, grouped ? `${l}（どれにも当てはまらないもの）` : l] as [string, string]),
+  ];
   const sortKeys: [string, string][] = [
     ["published", "日付"],
     ["first_seen", "収集した日"],
@@ -886,13 +894,14 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 show: { image: form.image },
                 excerpt_length: form.excerpt_length,
                 per_page: form.per_page,
-                sort: Object.fromEntries(tabs.map(([t]) => [t, sortOf(t)])),
+                sort: Object.fromEntries(sortRows.map(([t]) => [t, sortOf(t)])),
                 default_tab: tabs.some(([t]) => t === form.default_tab) ? form.default_tab : tabs[0][0],
                 filters: form.filters.filter((f) => kindOf.has(f.key)),
                 sections: form.sections
                   .filter((x) => x.label.trim())
                   .map((x) => ({ ...x, label: x.label.trim(), conditions: x.conditions.filter((f) => kindOf.has(f.key)) })),
                 all_tab: form.all_tab,
+                group_sections: form.group_sections,
               },
             },
           });
@@ -1040,12 +1049,18 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
               <input type="checkbox" checked={form.all_tab} onChange={(e) => setForm({ ...form, all_tab: e.target.checked })} /> 「すべて」タブも出す
             </label>
           )}
+          {form.sections.length > 0 && (
+            <label className="row small">
+              <input type="checkbox" checked={form.group_sections} onChange={(e) => setForm({ ...form, group_sections: e.target.checked })} /> 「すべて」では区分ごとに見出しを付けてまとめる
+              <span className="muted">（タブにしない区分も、見出しで1ページに並べられます）</span>
+            </label>
+          )}
         </div>
         <div>並び順</div>
         <div className="sort-rows">
-          {tabs.map(([t, l]) => (
+          {sortRows.map(([t, l]) => (
             <div key={t} className="row">
-              {tabs.length > 1 && <span className="sort-tab">{l}</span>}
+              {sortRows.length > 1 && <span className="sort-tab">{l}</span>}
               <select value={sortOf(t).key} onChange={(e) => setForm({ ...form, sort: { ...form.sort, [t]: { ...sortOf(t), key: e.target.value } } })}>
                 {sortKeys.map(([k, l]) => (
                   <option key={k} value={k}>

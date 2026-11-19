@@ -26,6 +26,8 @@ export interface PublicOptions {
   sections?: PublicSection[];
   /** 「すべて」タブを出すか（未指定は出す）。区分のタブがなければ常に「すべて」だけ */
   all_tab?: boolean;
+  /** 「すべて」タブで、区分の順に見出しを付けてまとめて並べる（区分の中は区分ごとの並び順） */
+  group_sections?: boolean;
   /** 絞り込みチップに使う複数値（または テキスト）フィールド */
   facet?: string | null;
   layout?: PublicLayout;
@@ -38,7 +40,7 @@ export interface PublicOptions {
   show?: { date?: boolean; source?: boolean; period?: boolean; excerpt?: boolean; image?: boolean };
   excerpt_length?: number;
   per_page?: number;
-  /** タブごとの並び順（区分の id または all） */
+  /** タブ・区分ごとの並び順（区分の id または all） */
   sort?: Record<string, PublicSort>;
   default_tab?: PublicTab;
   /** すべてのタブにかかる絞り込み条件（すべて満たすものだけを表示） */
@@ -111,8 +113,10 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     sections.push({ id: x.id, label, conditions: normFilters(x.conditions, 6), tab: !!x.tab && !x.hidden, badge: !!x.badge && !x.hidden, hidden: !!x.hidden });
   }
   const tabs = [...sections.filter((x) => x.tab).map((x) => x.id), ...(o.all_tab !== false || !sections.some((x) => x.tab) ? ["all"] : [])];
+  const group_sections = !!o.group_sections && sections.some((x) => !x.hidden);
   const sort: Record<string, PublicSort> = {};
-  for (const t of tabs) {
+  // タブのほか、見出しでまとめるときは各区分の中の並び順も持つ
+  for (const t of [...new Set([...tabs, ...(group_sections ? sections.filter((x) => !x.hidden).map((x) => x.id) : [])])]) {
     const x = o.sort?.[t];
     const d = DEFAULT_SORT[t] && (t === "all" || period) ? DEFAULT_SORT[t] : DEFAULT_SORT.all;
     sort[t] = x && sortKeyOk(x.key) ? { key: x.key, dir: x.dir === "asc" ? "asc" : "desc" } : d;
@@ -147,6 +151,7 @@ export function normalizePublicOptions(o: PublicOptions | null | undefined, fiel
     sort,
     sections,
     all_tab: tabs.includes("all"),
+    group_sections,
     default_tab: tabs.includes(o.default_tab as string) ? (o.default_tab as string) : tabs[0],
     filters,
   };
@@ -301,10 +306,9 @@ publicPages.get("/:slug", async (c) => {
     }
   }
   // 並び順：値のないものは常に後ろ
-  const sort = opts.sort[tab] ?? DEFAULT_SORT.all;
-  const dir = sort.dir === "asc" ? "ASC" : "DESC";
+  const sortSql = (sort: PublicSort) => {
   const agg = sort.dir === "asc" ? "MIN" : "MAX";
-  const sortExpr =
+  return (
     sort.key === "title"
       ? "TRIM(i.title_text, char(32, 9, 10, 13, 12288))"
       : sort.key === "first_seen"
@@ -315,8 +319,21 @@ publicPages.get("/:slug", async (c) => {
             ? `COALESCE(${v(period.end, "MAX")}, ${v(period.start, "MIN")})`
             : sort.key.startsWith("f:") && byKey.has(sort.key.slice(2))
               ? v(byKey.get(sort.key.slice(2))!, agg)
-              : "COALESCE(i.published_sort, i.first_seen_at)";
-  const order = `(${sortExpr}) IS NULL, ${sortExpr} ${dir}, COALESCE(i.published_sort, i.first_seen_at) DESC, i.id DESC`;
+              : "COALESCE(i.published_sort, i.first_seen_at)"
+  );
+  };
+  const sortOrder = (sort: PublicSort, when?: string) => {
+    const e = sortSql(sort);
+    const w = (x: string) => (when ? `(CASE WHEN ${when} THEN ${x} END)` : x);
+    return `${w(`(${e}) IS NULL`)}, ${w(e)} ${sort.dir === "asc" ? "ASC" : "DESC"}`;
+  };
+  // 見出しでまとめるとき：区分の順に並べ、区分の中はそれぞれの並び順（sec は SELECT の別名）
+  const grouped = opts.group_sections && tab === "all" && !!secSql;
+  const order = `${
+    grouped
+      ? ["sec", ...sections.map((x, k) => (x.hidden ? null : sortOrder(opts.sort[x.id] ?? DEFAULT_SORT.all, `sec = ${k}`))).filter(Boolean), sortOrder(opts.sort.all ?? DEFAULT_SORT.all, `sec = ${sections.length}`)].join(", ")
+      : sortOrder(opts.sort[tab] ?? DEFAULT_SORT.all)
+  }, COALESCE(i.published_sort, i.first_seen_at) DESC, i.id DESC`;
   if (facet && facetValue) {
     where.push("EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND fv.value_text = ?)");
     args.push(facet.id, facetValue);
@@ -478,7 +495,7 @@ publicPages.get("/:slug", async (c) => {
   };
 
   const COL_LABEL: Record<string, string> = { date: "日付", source: "情報源", title: "タイトル", period: "期間", excerpt: "概要" };
-  const table = () => html`<div class="table-wrap">
+  const table = (rows: typeof items) => html`<div class="table-wrap">
     <table class="entries-table">
       <thead>
         <tr>
@@ -486,7 +503,7 @@ publicPages.get("/:slug", async (c) => {
         </tr>
       </thead>
       <tbody>
-        ${items.map((it) => {
+        ${rows.map((it) => {
           const x = view(it);
           return html`<tr>
             ${opts.display.map((k) => {
@@ -505,8 +522,19 @@ publicPages.get("/:slug", async (c) => {
     </table>
   </div>`;
 
-  const listEl = () =>
-    kind === "table" ? table() : kind === "cards" ? html`<ol class="cards">${items.map(entry)}</ol>` : kind === "compact" ? html`<ol class="rows">${items.map(entry)}</ol>` : html`<ol class="entries">${items.map(entry)}</ol>`;
+  const listOf = (xs: typeof items) =>
+    kind === "table" ? table(xs) : kind === "cards" ? html`<ol class="cards">${xs.map(entry)}</ol>` : kind === "compact" ? html`<ol class="rows">${xs.map(entry)}</ol>` : html`<ol class="entries">${xs.map(entry)}</ol>`;
+  // 見出しでまとめるときは、続いて並ぶ同じ区分ごとに見出しを付ける
+  const listEl = () => {
+    if (!grouped) return listOf(items);
+    const groups: { sec: number; xs: typeof items }[] = [];
+    for (const it of items) {
+      const k = it.sec ?? sections.length;
+      if (groups.length && groups[groups.length - 1].sec === k) groups[groups.length - 1].xs.push(it);
+      else groups.push({ sec: k, xs: [it] });
+    }
+    return groups.map((g) => html`<section class="sec-group"><h2 class="sec-heading">${sections[g.sec]?.label ?? "その他"}</h2>${listOf(g.xs)}</section>`);
+  };
 
   c.header("Cache-Control", "public, max-age=300");
   if (preview) {
@@ -699,6 +727,8 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .source { display: inline-flex; align-items: center; gap: 6px; }
 .source img { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; }
 .entry-title { font-size: 19px; line-height: 1.5; margin: 4px 0 4px; font-weight: 600; overflow-wrap: anywhere; }
+.sec-group + .sec-group { margin-top: 32px; }
+.sec-heading { margin: 24px 0 4px; font-size: 18px; font-weight: 700; padding-bottom: 6px; border-bottom: 2px solid var(--accent); display: inline-block; }
 .sec-badge { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; line-height: 1.6; vertical-align: 2px; white-space: nowrap; }
 .period { margin: 0 0 4px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .excerpt { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }

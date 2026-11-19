@@ -154,7 +154,17 @@ userApi.post("/subscriptions/:id/repair", async (c) => {
   const cv = s.active_config_version_id
     ? await c.env.DB.prepare("SELECT json_extract(config_json, '$.source.url') AS url FROM config_versions WHERE id = ?").bind(s.active_config_version_id).first<{ url: string }>()
     : null;
-  const sid = await startSession(c.env, s.id, s.active_config_version_id ? "repair" : "setup", cv?.url ?? s.input_url, last?.id);
+  // 利用者の指示つきの見直しは、登録した URL（一覧ページ）から調べ直す
+  const b = await c.req.json<{ instruction?: string }>().catch(() => ({}) as { instruction?: string });
+  const instruction = typeof b.instruction === "string" ? b.instruction.trim().slice(0, 1000) : "";
+  const sid = await startSession(
+    c.env,
+    s.id,
+    s.active_config_version_id ? "repair" : "setup",
+    instruction ? s.input_url : (cv?.url ?? s.input_url),
+    instruction ? undefined : last?.id,
+    instruction || undefined,
+  );
   return c.json({ setup_session_id: sid }, 201);
 });
 

@@ -13,6 +13,8 @@ export interface SetupParams {
   kind: "setup" | "repair" | "detail";
   url: string;
   triggerRunId?: string;
+  /** 見直しのときの利用者からの指示（例：RSS ではなく一覧ページから取る） */
+  instruction?: string;
 }
 
 interface Proposal {
@@ -334,7 +336,15 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       startNote: "AIが取得方法と抽出ルールを調査中",
       intro: async () => {
         let intro = `購読したいURL: ${p.url}\n\n以下は VPS で取得した調査結果です（HTTP取得、ブラウザ実行後のDOMアウトライン、繰り返し構造候補、ページング候補、RSS/Atom候補）。\n<untrusted_page_data>\n${truncateJson(discovery, 60000)}\n</untrusted_page_data>`;
-        if (p.kind === "repair") {
+        if (p.kind === "repair" && p.instruction) {
+          // 利用者の指示による見直し（抽出は失敗していない）
+          const sub = await env.DB.prepare("SELECT active_config_version_id FROM subscriptions WHERE id = ?").bind(p.subscriptionId).first<{ active_config_version_id: string }>();
+          const cv = sub && (await env.DB.prepare("SELECT config_json FROM config_versions WHERE id = ?").bind(sub.active_config_version_id).first<{ config_json: string }>());
+          intro =
+            `これは稼働中の購読設定の「見直し」です。利用者から次の指示がありました。指示に沿って設定を作り直してください（取得元・取得方式の変更も可）。\n<user_instruction>\n${p.instruction}\n</user_instruction>\n` +
+            `識別方法（identity）は変わってもかまいません（既存 item は source_id または閲覧URLで照合して引き継ぎます）。detail は現行のものを引き継ぐので、config の detail は null にしてください。\n\n現行設定:\n${cv?.config_json}\n\n` +
+            intro;
+        } else if (p.kind === "repair") {
           const sub = await env.DB.prepare("SELECT active_config_version_id FROM subscriptions WHERE id = ?").bind(p.subscriptionId).first<{ active_config_version_id: string }>();
           const cv = sub && (await env.DB.prepare("SELECT config_json FROM config_versions WHERE id = ?").bind(sub.active_config_version_id).first<{ config_json: string }>());
           const run = p.triggerRunId ? await env.DB.prepare("SELECT end_reason, error_stage, error_detail FROM crawl_runs WHERE id = ?").bind(p.triggerRunId).first() : null;
@@ -629,7 +639,7 @@ interface ValResult {
   all_keys: string[];
 }
 
-export async function startSession(env: Env, subscriptionId: string, kind: SetupParams["kind"], url: string, triggerRunId?: string): Promise<string> {
+export async function startSession(env: Env, subscriptionId: string, kind: SetupParams["kind"], url: string, triggerRunId?: string, instruction?: string): Promise<string> {
   const sid = newId();
   const now = nowIso();
   await env.DB.batch([
@@ -644,6 +654,6 @@ export async function startSession(env: Env, subscriptionId: string, kind: Setup
     ),
     env.DB.prepare("UPDATE subscriptions SET current_setup_session_id = ?, updated_at = ? WHERE id = ?").bind(sid, now, subscriptionId),
   ]);
-  await env.SETUP_WORKFLOW.create({ id: sid, params: { sessionId: sid, subscriptionId, kind, url, triggerRunId } satisfies SetupParams });
+  await env.SETUP_WORKFLOW.create({ id: sid, params: { sessionId: sid, subscriptionId, kind, url, triggerRunId, instruction } satisfies SetupParams });
   return sid;
 }

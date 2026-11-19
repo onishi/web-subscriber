@@ -119,6 +119,8 @@ export function SubscriptionPage() {
   const { id } = useParams();
   const { data, reload } = useApi<any>(`/subscriptions/${id}`, { pollMs: 10000 });
   const [tab, setTab] = useState("items");
+  // 「AIで設定を見直す」の指示（null は閉じている）
+  const [review, setReview] = useState<string | null>(null);
   if (!data) return <p className="muted">読み込み中…</p>;
   const s = data.subscription;
   const cfg = data.active_config?.config;
@@ -150,18 +152,7 @@ export function SubscriptionPage() {
             {s.status === "active" ? "一時停止" : "再開"}
           </button>
         )}
-        <button
-          onClick={async () => {
-            try {
-              const r = await api<any>(`/subscriptions/${s.id}/repair`, { method: "POST" });
-              location.href = `/setup/${r.setup_session_id}`;
-            } catch (e) {
-              alert((e as Error).message);
-            }
-          }}
-        >
-          AIで設定を見直す
-        </button>
+        <button onClick={() => setReview(review === null ? "" : null)}>AIで設定を見直す</button>
         {s.active_config_version_id && (
           <button
             title="一覧に本文がないとき、リンク先の複数ページを AI が比較して取得ルールを作ります"
@@ -178,6 +169,40 @@ export function SubscriptionPage() {
           </button>
         )}
       </div>
+      {review !== null && (
+        <form
+          className="panel review-box"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              const r = await api<any>(`/subscriptions/${s.id}/repair`, { method: "POST", json: review.trim() ? { instruction: review.trim() } : {} });
+              location.href = `/setup/${r.setup_session_id}`;
+            } catch (e) {
+              alert((e as Error).message);
+            }
+          }}
+        >
+          <label className="small">
+            AI への指示（任意）
+            <textarea
+              rows={2}
+              maxLength={1000}
+              value={review}
+              placeholder="例：RSS には開催中の展覧会が載っていないので、一覧ページ（HTML）から取るようにして"
+              onChange={(e) => setReview(e.target.value)}
+            />
+          </label>
+          <p className="small muted" style={{ margin: "4px 0 8px" }}>
+            指示を書くと、登録した URL から調べ直して設定案を作ります（取得元の切り替えもできます）。空のままなら、今の設定の壊れた部分を直します。設定案は確認してから保存します。
+          </p>
+          <div className="row">
+            <button className="primary">見直しを開始</button>
+            <button type="button" onClick={() => setReview(null)}>
+              やめる
+            </button>
+          </div>
+        </form>
+      )}
       <div className="panel">
         <div className="kv small">
           <div>URL</div>

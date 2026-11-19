@@ -49,4 +49,21 @@ describe("normalizePublicOptions: sections", () => {
     const o = normalizePublicOptions({ filters: [{ key: "published", op: "last_days" }, { key: "f:tags", op: "future" }, { key: "published", op: "until_today" }] }, fields);
     expect(o.filters).toEqual([{ key: "published", op: "until_today" }]);
   });
+  it("keeps per-section sort when grouping by section", () => {
+    const o = normalizePublicOptions(
+      {
+        sections: [
+          { id: "now", label: "開催中", conditions: [{ key: "f:end_date", op: "future" }], tab: false, badge: false, hidden: false },
+          { id: "ended", label: "終了", conditions: [], tab: false, badge: false, hidden: true },
+        ],
+        group_sections: true,
+        sort: { now: { key: "f:end_date", dir: "asc" }, ended: { key: "title", dir: "asc" } },
+      },
+      fields,
+    );
+    expect(o.group_sections).toBe(true);
+    expect(o.sort.now).toEqual({ key: "f:end_date", dir: "asc" });
+    expect(o.sort.ended).toBeUndefined();
+    expect(o.sort.all).toEqual({ key: "published", dir: "desc" });
+  });
 });

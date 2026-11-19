@@ -24,7 +24,7 @@ export const SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定エン�
 - 確認できなかったことは unverified に正直に列挙してください。
 
 # 判断の指針
-1. RSS/Atom が見つかり、item数・リンク・日付が揃っていれば kind="feed" を推奨してよい（HTML版と比べて取りこぼしが大きい場合は html を選ぶ）。feed は fetch.method="http"、extract は null、identity は guid/id が全itemにあれば "source_id"、なければ "link"。
+1. RSS/Atom が見つかり、item数・リンク・日付が揃っていれば kind="feed" を推奨してよい（HTML版と比べて取りこぼしが大きい場合は html を選ぶ。フィードは「新しく公開された記事」だけを数件しか載せないことが多いので、一覧ページの item（リンク）とフィードの item を見比べ、一覧にあってフィードにないもの（開催中の催しなど）が多ければ html を選ぶ）。feed は fetch.method="http"、extract は null、identity は guid/id が全itemにあれば "source_id"、なければ "link"。
 2. HTML の場合、http（JS非実行）で一覧が取れるなら method="http"。JS実行後にしか一覧が出ない、またはクリックによるページングが必要なら "browser"。
 3. item の繰り返し要素（items.select）と、その一覧の親（items.container）を指定する。container は「一覧の準備完了」の判定にも使う。0件ページを想定し、空表示の要素があれば empty_marker に指定する。
 4. item 内フィールドは item 要素を起点とする相対セレクタで書く。CSS推奨、必要ならXPath(1.0)。自動生成されたようなクラス名（ハッシュ風）は避け、構造的に安定したセレクタを選ぶ。
