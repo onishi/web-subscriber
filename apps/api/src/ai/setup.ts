@@ -272,6 +272,8 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
         await sdo(step, "detail-start", async () => addProgress(env, sid, "detail", "running", `一覧に本文がないため、リンク先 ${sample.length} ページを比較して取得ルールを作成`));
         try {
           const dp = await this.detailAiLoop(step, p, listCfg, sample, (main as ValResult).items.slice(0, 5));
+          // 一覧で本文が取れている購読で「本文のない item のみ」にすると、詳細ページを一度も取りに行かない
+          if (dp.detail.when === "missing_content" && !lacksContent(main as ValResult)) dp.detail = { ...dp.detail, when: "always" };
           prop = { ...prop, config: { ...prop.config, detail: dp.detail }, unverified: [...prop.unverified, ...dp.unverified], rationale: `${prop.rationale}\n\n詳細ページ: ${dp.rationale}` };
         } catch (e) {
           if (p.kind === "detail") throw e;
