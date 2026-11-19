@@ -364,20 +364,61 @@ export function ItemList({
   );
 }
 
-function TextView({ t }: { t: any }) {
+function TextView({ t, base }: { t: any; base?: string | null }) {
   if (!t) return null;
-  if (t.type === "html" || t.type === "xhtml") return <div className="detail" dangerouslySetInnerHTML={{ __html: sanitize(t.value) }} />;
+  if (t.type === "html" || t.type === "xhtml") return <div className="detail" dangerouslySetInnerHTML={{ __html: sanitize(t.value, t.base ?? base) }} />;
   return <div className="detail" style={{ whiteSpace: "pre-wrap" }}>{t.value}</div>;
 }
 
-/** 表示前の簡易サニタイズ（script/style/on*属性/javascript:URL を除去） */
-function sanitize(html: string): string {
+/** 相対 URL を元ページの URL で絶対 URL にする（できなければそのまま） */
+const absUrl = (u: string, base?: string | null) => {
+  try {
+    return new URL(u.trim(), base ?? undefined).href;
+  } catch {
+    return u;
+  }
+};
+// 遅延読み込み用に本当の画像 URL を入れておく属性
+const LAZY_SRC = ["data-src", "data-original", "data-lazy-src", "data-echo", "data-url"];
+
+/**
+ * 表示前の簡易サニタイズ（script/style/on*属性/javascript:URL を除去）。
+ * あわせて、元ページからの相対パスの画像・リンクを元ページの URL で補う
+ */
+function sanitize(html: string, base?: string | null): string {
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
   doc.querySelectorAll("script,style,iframe,object,embed,form,link,meta").forEach((e) => e.remove());
   doc.querySelectorAll("*").forEach((el) => {
     for (const a of Array.from(el.attributes)) {
-      if (/^on/i.test(a.name) || (/^(href|src|xlink:href|action)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) el.removeAttribute(a.name);
+      if (/^on/i.test(a.name) || (/^(href|src|xlink:href|action|poster)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) el.removeAttribute(a.name);
     }
+    if (el.tagName === "IMG" || el.tagName === "SOURCE") {
+      // 遅延読み込みの画像は本当の URL を src に戻す（src がないか、データ URL の仮画像のとき）
+      const lazy = LAZY_SRC.map((n) => el.getAttribute(n)).find((v) => v && !/^\s*javascript:/i.test(v));
+      const src = el.getAttribute("src");
+      if (lazy && (!src || /^data:/i.test(src))) el.setAttribute("src", lazy);
+      const lazySet = el.getAttribute("data-srcset");
+      if (lazySet && !el.getAttribute("srcset")) el.setAttribute("srcset", lazySet);
+      el.setAttribute("loading", "lazy");
+      el.setAttribute("referrerpolicy", "no-referrer");
+    }
+    for (const name of ["src", "href", "poster"]) {
+      const v = el.getAttribute(name);
+      if (v && !/^(#|data:|mailto:|tel:)/i.test(v.trim())) el.setAttribute(name, absUrl(v, base));
+    }
+    const srcset = el.getAttribute("srcset");
+    if (srcset)
+      el.setAttribute(
+        "srcset",
+        srcset
+          .split(",")
+          .map((part) => {
+            const [u, ...rest] = part.trim().split(/\s+/);
+            return u ? [absUrl(u, base), ...rest].join(" ") : "";
+          })
+          .filter(Boolean)
+          .join(", "),
+      );
     if (el.tagName === "A") {
       el.setAttribute("target", "_blank");
       el.setAttribute("rel", "noopener noreferrer");
@@ -393,6 +434,8 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
   const alt = d.links.filter((l: any) => l.rel === "alternate");
   const enc = d.links.filter((l: any) => l.rel === "enclosure");
   const authors = data.effective.authors;
+  // 本文中の相対パスを補うための元ページの URL
+  const pageUrl: string | null = alt[0]?.href ?? null;
   return (
     <div className="panel">
       <div className="row">
@@ -412,7 +455,7 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
       {d.summary && (
         <>
           <h3>要約{d.native?.description_role === "unknown" && <span className="muted small">（RSS description：全文の場合あり）</span>}</h3>
-          <TextView t={d.summary} />
+          <TextView t={d.summary} base={pageUrl} />
         </>
       )}
       {d.content && (
@@ -425,7 +468,7 @@ function ItemDetail({ id, onUnread }: { id: string; onUnread: () => void }) {
           ) : d.content.encoding === "base64" ? (
             <p className="muted">{d.content.type}（base64）</p>
           ) : (
-            <TextView t={d.content} />
+            <TextView t={d.content} base={pageUrl} />
           )}
         </>
       )}
