@@ -221,7 +221,7 @@ userApi.post("/configs/:id/validate", async (c) => {
 });
 
 userApi.post("/configs/:id/activate", async (c) => {
-  const cv = await c.env.DB.prepare("SELECT * FROM config_versions WHERE id = ?").bind(c.req.param("id")).first<{ id: string; subscription_id: string; state: string }>();
+  const cv = await c.env.DB.prepare("SELECT * FROM config_versions WHERE id = ?").bind(c.req.param("id")).first<{ id: string; subscription_id: string; state: string; version: number }>();
   if (!cv) return c.json({ error: "not_found" }, 404);
   if (cv.state === "active") return c.json({ ok: true });
   const s = (await getSub(c.env, cv.subscription_id))!;
@@ -230,6 +230,8 @@ userApi.post("/configs/:id/activate", async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE config_versions SET state = 'superseded' WHERE subscription_id = ? AND state = 'active'").bind(s.id),
     c.env.DB.prepare("UPDATE config_versions SET state = 'active', activated_at = ? WHERE id = ?").bind(now, cv.id),
+    // 採用した設定より古い下書きは使われないので片付ける（破棄と同じ扱い）
+    c.env.DB.prepare("UPDATE config_versions SET state = 'rejected' WHERE subscription_id = ? AND state = 'draft' AND version < ?").bind(s.id, cv.version),
     c.env.DB.prepare("UPDATE subscriptions SET active_config_version_id = ?, status = ?, next_run_at = ?, consecutive_extract_failures = 0, updated_at = ? WHERE id = ?").bind(
       cv.id,
       status,
