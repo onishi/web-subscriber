@@ -561,7 +561,8 @@ export function ItemsPage() {
   const { data: sets } = useSets();
   const list = sets?.sets ?? [];
   const setId = sp.get("set") ?? "";
-  const current = list.find((s) => s.id === setId) ?? null;
+  // セットの一覧を待たずに読み込みを始める（一覧に無いと分かったら「すべて」に戻す）
+  const current = setId && (!sets || list.some((s) => s.id === setId)) ? { id: setId } : null;
   const detail = useApi<{ fields: FieldDef[] }>(current ? `/sets/${current.id}` : null);
   const scopes = ["", ...list.map((s) => s.id)];
   const go = (id: string) => setSp(id ? { set: id } : {}, { replace: false });
@@ -594,11 +595,8 @@ export function ItemsPage() {
         ))}
       </div>
       {current ? (
-        detail.data ? (
-          <ItemList key={current.id} setId={current.id} fields={detail.data.fields} onRead={notifySetsChangedSoon} />
-        ) : (
-          <p className="muted">読み込み中…</p>
-        )
+        // フィールドの定義は一覧と並行して読み込み、届いたら値を表示する
+        <ItemList key={current.id} setId={current.id} fields={detail.data?.fields} onRead={notifySetsChangedSoon} />
       ) : (
         <ItemList key="all" onRead={notifySetsChangedSoon} />
       )}

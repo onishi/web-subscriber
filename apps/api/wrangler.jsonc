@@ -12,13 +12,15 @@
     "run_worker_first": ["/*", "!/assets/*"]
   },
   // reader：管理画面と API（Cloudflare Access で保護。/worker はバイパスしてクローラ用トークンで認証）、radar：公開ページ
+  // D1 はアジア太平洋（APAC）にある。Worker を DB の近くで動かし、1 回のリクエストの中での DB との往復を短くする
+  "placement": { "mode": "smart" },
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
     { "pattern": "reader.wagaya.org", "custom_domain": true },
     { "pattern": "radar.wagaya.org", "custom_domain": true }
   ],
-  "d1_databases": [{ "binding": "DB", "database_name": "web-subscriber-db", "database_id": "9df90e71-a98f-43a3-84f1-1a108318e3f3", "migrations_dir": "migrations" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "web-subscriber-db-apac", "database_id": "cb62ae1b-4176-473c-8d9f-96ee651485a3", "migrations_dir": "migrations" }],
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "web-subscriber-blobs" }],
   "workflows": [{ "name": "ws-setup", "binding": "SETUP_WORKFLOW", "class_name": "SetupWorkflow" }],
   "triggers": { "crons": ["*/5 * * * *"] },

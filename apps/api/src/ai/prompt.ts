@@ -134,6 +134,7 @@ export const DETAIL_SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定
 3. content は本文全体が明確にまとまった要素があれば take:"inner_html" で取る。ナビゲーション・パンくず・関連リンク・フッター・SNSボタンは含めない。
 4. 本文要素が見つからない、またはページごとに揺れる場合は fallback にメタ情報を使う：{"from":{"css":"meta[name='description']"},"take":{"attr":"content"}}、{"from":{"css":"meta[property='og:description']"},"take":{"attr":"content"}}。
 5. 会期・開催日・公開日などの日付が詳細ページにあれば published_at に parse_date 付きで取る（一覧で取れていれば不要）。会期の範囲表記は regex_extract で開始日を取り出す。
+   会期・開催期間・開催日時の表記があれば、それとは別に範囲表記そのままのテキストを period（任意名）でも取る（collapse_whitespace 付き。終了日を後で使うため）。一覧で本文が取れていても、会期が一覧に無ければ取る。
 6. 画像は image フィールドに {"take":{"attr":"content"}} で og:image、または本文中の代表画像の src を resolve_url 付きで取ってよい。
 7. 一覧で取れているフィールド（title・link 等）は、詳細ページの方が明らかに良い場合を除き指定しない。title を指定すると一覧のタイトルを上書きする。
 8. fetch.method は http（JS非実行）で本文が取れるなら "http"。JS実行後にしか本文が出ない場合のみ "browser" とし、wait に本文要素の exists を指定する。

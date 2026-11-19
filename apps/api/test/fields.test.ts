@@ -62,4 +62,11 @@ describe("itemText", () => {
     expect(t).toContain("概要: 島津家の歴史と文化を紹介する特別展");
     expect(t).toContain("一覧ページの概要: 2027年10月8日（金）～12月5日（日）");
   });
+  it("passes detail-page extra fields for feed items, before the body", () => {
+    const base = { links: [], authors: [], contributors: [], categories: [], extensions: [] };
+    const list = { ...base, native: { format: "rss2" }, title: { type: "text", value: "特別展" }, content: { kind: "inline", type: "html", value: "<p>" + "あ".repeat(5000) + "</p>" } };
+    const detail = { ...base, native: { format: "html", extracted_fields: { period: "2027年2月6日（土）〜5月5日（水・祝）" } } };
+    const t = itemText({ data_json: JSON.stringify(list), detail_json: JSON.stringify(detail) });
+    expect(t).toContain("period: 2027年2月6日（土）〜5月5日（水・祝）");
+  });
 });

@@ -379,13 +379,15 @@ userApi.get("/items", async (c) => {
   }));
   // セット表示ではカスタムフィールドの値を付ける
   if (setId && fields.length && items.length) {
-    const vals = await c.env.DB.prepare(`SELECT item_id, field_id, ord, value_text, value_num, value_date FROM item_field_values WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")}) ORDER BY ord`)
+    const [vals, locks] = await Promise.all([
+      c.env.DB.prepare(`SELECT item_id, field_id, ord, value_text, value_num, value_date FROM item_field_values WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")}) ORDER BY ord`)
       .bind(setId, ...items.map((i) => i.id))
-      .all<{ item_id: string; field_id: string; ord: number; value_text: string | null; value_num: number | null; value_date: string | null }>();
+      .all<{ item_id: string; field_id: string; ord: number; value_text: string | null; value_num: number | null; value_date: string | null }>(),
+      c.env.DB.prepare(`SELECT item_id, field_id FROM item_field_locks WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")})`)
+      .bind(setId, ...items.map((i) => i.id))
+      .all<{ item_id: string; field_id: string }>(),
+    ]);
     const byId = new Map(fields.map((f) => [f.id, f]));
-    const locks = await c.env.DB.prepare(`SELECT item_id, field_id FROM item_field_locks WHERE set_id = ? AND item_id IN (${items.map(() => "?").join(",")})`)
-      .bind(setId, ...items.map((i) => i.id))
-      .all<{ item_id: string; field_id: string }>();
     const manual = new Map<string, string[]>();
     for (const l of locks.results) {
       const f = byId.get(l.field_id);
@@ -412,7 +414,13 @@ userApi.get("/items/:id", async (c) => {
   const listData = JSON.parse(it.data_json) as ItemData;
   const detailData = it.detail_json ? (JSON.parse(it.detail_json) as ItemData) : null;
   const data = mergeDetail(listData, detailData);
-  const ch = await c.env.DB.prepare("SELECT data_json FROM channels WHERE subscription_id = ?").bind(it.subscription_id).first<{ data_json: string }>();
+  // 互いに依存しない問い合わせはまとめて投げる（DB との往復を減らす）
+  const [ch, revisions, rs, customFields] = await Promise.all([
+    c.env.DB.prepare("SELECT data_json FROM channels WHERE subscription_id = ?").bind(it.subscription_id).first<{ data_json: string }>(),
+    c.env.DB.prepare("SELECT id, run_id, change_kind, created_at, data_json FROM item_revisions WHERE item_id = ? ORDER BY created_at DESC LIMIT 20").bind(it.id).all<Record<string, string>>(),
+    c.env.DB.prepare("SELECT read_at FROM reading_states WHERE user_id = ? AND item_id = ?").bind(uid, it.id).first<{ read_at: string }>(),
+    itemCustomFields(c.env, it.id, it.subscription_id),
+  ]);
   const channel = ch ? (JSON.parse(ch.data_json) as ChannelData) : null;
   // 明示値と有効値（継承）を区別して返す
   const inherit = <T>(explicit: T | undefined | null, fromChannel: T | undefined | null, empty: (v: T) => boolean) =>
@@ -423,9 +431,6 @@ userApi.get("/items/:id", async (c) => {
     rights: inherit(data.rights, data.source?.rights ?? channel?.rights, () => false),
     language: inherit(data.language ?? (data.content?.kind === "inline" ? data.content.lang : undefined), channel?.language, () => false),
   };
-  const revisions = await c.env.DB.prepare("SELECT id, run_id, change_kind, created_at, data_json FROM item_revisions WHERE item_id = ? ORDER BY created_at DESC LIMIT 20").bind(it.id).all<Record<string, string>>();
-  const rs = await c.env.DB.prepare("SELECT read_at FROM reading_states WHERE user_id = ? AND item_id = ?").bind(uid, it.id).first<{ read_at: string }>();
-  const customFields = await itemCustomFields(c.env, it.id, it.subscription_id);
   const { data_json: _d, detail_json: _dj, ...meta } = it;
   return c.json({ ...meta, custom_fields: customFields, data, list_data: detailData ? listData : undefined, detail_data: detailData, effective, read_at: rs?.read_at ?? null, revisions: revisions.results.map((r) => ({ ...r, data: json(r.data_json, null), data_json: undefined })) });
 });
@@ -495,15 +500,16 @@ userApi.post("/sets", async (c) => {
 userApi.get("/sets/:id", async (c) => {
   const st = await c.env.DB.prepare("SELECT * FROM sets WHERE id = ?").bind(c.req.param("id")).first();
   if (!st) return c.json({ error: "not_found" }, 404);
-  const members = await c.env.DB.prepare(
+  const [members, fields, status] = await Promise.all([
+    c.env.DB.prepare(
     `SELECT s.id, s.input_url, s.display_title, s.status, s.health, json_extract(ch.data_json, '$.title.value') AS channel_title, json_extract(ch.data_json, '$.logo.url') AS channel_logo
      FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id LEFT JOIN channels ch ON ch.subscription_id = s.id
      WHERE m.set_id = ? AND s.status != 'archived' ORDER BY m.added_at`,
   )
     .bind(st.id)
-    .all();
-  const fields = await loadFields(c.env, st.id as string);
-  const status = await c.env.DB.prepare(
+    .all(),
+    loadFields(c.env, st.id as string),
+    c.env.DB.prepare(
     `SELECT COUNT(*) AS total,
        SUM(CASE WHEN e.status = 'ok' AND e.schema_hash = ? THEN 1 ELSE 0 END) AS done,
        SUM(CASE WHEN e.status = 'error' AND e.schema_hash = ? THEN 1 ELSE 0 END) AS errors
@@ -511,7 +517,8 @@ userApi.get("/sets/:id", async (c) => {
      LEFT JOIN item_field_extractions e ON e.item_id = i.id AND e.set_id = m.set_id`,
   )
     .bind(st.fields_hash ?? "", st.fields_hash ?? "", st.id)
-    .first<{ total: number; done: number; errors: number }>();
+    .first<{ total: number; done: number; errors: number }>(),
+  ]);
   const public_base_url = c.env.PUBLIC_HOST ? `https://${c.env.PUBLIC_HOST}/` : `${new URL(c.req.url).origin}/p/`;
   return c.json({ set: { ...st, public_base_url }, members: members.results, fields, extraction: { total: status?.total ?? 0, done: status?.done ?? 0, errors: status?.errors ?? 0, ai: !!c.env.GEMINI_API_KEY } });
 });
@@ -676,10 +683,12 @@ async function itemCustomFields(env: Env, itemId: string, subscriptionId: string
     .bind(subscriptionId)
     .all<SetField & { set_name: string; fields_hash: string | null }>();
   if (!fields.results.length) return [];
-  const vals = await env.DB.prepare("SELECT field_id, value_text, value_num, value_date FROM item_field_values WHERE item_id = ? ORDER BY ord").bind(itemId).all<{ field_id: string; value_text: string | null; value_num: number | null; value_date: string | null }>();
-  const locks = await env.DB.prepare("SELECT field_id, locked_by, locked_at FROM item_field_locks WHERE item_id = ?").bind(itemId).all<{ field_id: string; locked_by: string; locked_at: string }>();
-  const ex = await env.DB.prepare("SELECT set_id, schema_hash, status, error, updated_at FROM item_field_extractions WHERE item_id = ?").bind(itemId).all<{ set_id: string; schema_hash: string; status: string; error: string | null; updated_at: string }>();
-  const edits = await env.DB.prepare("SELECT field_id, action, before_json, after_json, user_id, created_at FROM item_field_edits WHERE item_id = ? ORDER BY created_at DESC LIMIT 50").bind(itemId).all<{ field_id: string; action: string; before_json: string; after_json: string | null; user_id: string; created_at: string }>();
+  const [vals, locks, ex, edits] = await Promise.all([
+    env.DB.prepare("SELECT field_id, value_text, value_num, value_date FROM item_field_values WHERE item_id = ? ORDER BY ord").bind(itemId).all<{ field_id: string; value_text: string | null; value_num: number | null; value_date: string | null }>(),
+    env.DB.prepare("SELECT field_id, locked_by, locked_at FROM item_field_locks WHERE item_id = ?").bind(itemId).all<{ field_id: string; locked_by: string; locked_at: string }>(),
+    env.DB.prepare("SELECT set_id, schema_hash, status, error, updated_at FROM item_field_extractions WHERE item_id = ?").bind(itemId).all<{ set_id: string; schema_hash: string; status: string; error: string | null; updated_at: string }>(),
+    env.DB.prepare("SELECT field_id, action, before_json, after_json, user_id, created_at FROM item_field_edits WHERE item_id = ? ORDER BY created_at DESC LIMIT 50").bind(itemId).all<{ field_id: string; action: string; before_json: string; after_json: string | null; user_id: string; created_at: string }>(),
+  ]);
   return fields.results.map((f) => {
     const lock = locks.results.find((l) => l.field_id === f.id);
     const e = ex.results.find((x) => x.set_id === f.set_id);

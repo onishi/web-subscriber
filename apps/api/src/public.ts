@@ -307,7 +307,9 @@ publicPages.get("/:slug", async (c) => {
     where.push("EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id = ? AND fv.value_text = ?)");
     args.push(facet.id, facetValue);
   }
-  const rs = await c.env.DB.prepare(
+  // DB との往復を減らすため、互いに依存しない問い合わせはまとめて投げる
+  const [rs, sources, chipRows] = await Promise.all([
+    c.env.DB.prepare(
     `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
        ${IMAGE} AS image,
        ${SUMMARY} AS summary,
@@ -315,20 +317,27 @@ publicPages.get("/:slug", async (c) => {
      FROM items i WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`,
   )
     .bind(...args, PER_PAGE + 1, (page - 1) * PER_PAGE)
-    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null }>();
-  const items = rs.results.slice(0, PER_PAGE);
-
-  // 情報源（購読先）
-  const sources = await c.env.DB.prepare(
+    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null }>(),
+    // 情報源（購読先）
+    c.env.DB.prepare(
     `SELECT s.id, s.input_url, s.last_success_at, COALESCE(s.display_title, json_extract(ch.data_json, '$.title.value'), s.input_url) AS title, json_extract(ch.data_json, '$.logo.url') AS logo,
        (SELECT json_extract(value, '$.href') FROM json_each(ch.data_json, '$.links') WHERE json_extract(value, '$.rel') = 'alternate' LIMIT 1) AS home
      FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id LEFT JOIN channels ch ON ch.subscription_id = s.id
      WHERE m.set_id = ? AND s.status != 'archived' ORDER BY m.added_at`,
   )
     .bind(st.id)
-    .all<{ id: string; input_url: string; last_success_at: string | null; title: string; logo: string | null; home: string | null }>();
+    .all<{ id: string; input_url: string; last_success_at: string | null; title: string; logo: string | null; home: string | null }>(),
+    // 絞り込みチップ
+    facet
+      ? c.env.DB.prepare("SELECT value_text AS value, COUNT(DISTINCT item_id) AS count FROM item_field_values WHERE field_id = ? AND value_text IS NOT NULL GROUP BY value_text ORDER BY count DESC LIMIT 30")
+          .bind(facet.id)
+          .all<{ value: string; count: number }>()
+      : null,
+  ]);
+  const items = rs.results.slice(0, PER_PAGE);
   const src = new Map(sources.results.map((s) => [s.id, s]));
   const updated = sources.results.map((s) => s.last_success_at).filter(Boolean).sort().pop() ?? null;
+  const chips: { value: string; count: number }[] = chipRows?.results ?? [];
 
   // カスタムフィールドの値
   const valueFields = [...shown, ...(period ? [period.start, period.end] : [])];
@@ -348,14 +357,6 @@ publicPages.get("/:slug", async (c) => {
     }
   }
 
-  // 絞り込みチップ
-  let chips: { value: string; count: number }[] = [];
-  if (facet) {
-    const fr = await c.env.DB.prepare("SELECT value_text AS value, COUNT(DISTINCT item_id) AS count FROM item_field_values WHERE field_id = ? AND value_text IS NOT NULL GROUP BY value_text ORDER BY count DESC LIMIT 30")
-      .bind(facet.id)
-      .all<{ value: string; count: number }>();
-    chips = fr.results;
-  }
 
   const title = (st.public_title as string) || (st.name as string);
   const description = (st.public_description as string) || "";

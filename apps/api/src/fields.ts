@@ -141,7 +141,8 @@ const stripHtml = (s: string) =>
 /** AI に渡す item のテキスト（一覧の値に詳細ページの値を重ねたもの） */
 export function itemText(row: { data_json: string; detail_json: string | null }): string {
   const list = JSON.parse(row.data_json) as ItemData;
-  const d = mergeDetail(list, json<ItemData | null>(row.detail_json, null));
+  const det = json<ItemData | null>(row.detail_json, null);
+  const d = mergeDetail(list, det);
   const parts: string[] = [];
   if (d.title?.value) parts.push(`タイトル: ${stripHtml(d.title.value)}`);
   const pub = d.published_at?.value ?? d.published_at?.raw;
@@ -152,13 +153,15 @@ export function itemText(row: { data_json: string; detail_json: string | null })
   // 詳細ページの値で上書きされた一覧側の概要（会期などが入っていることが多い）も渡す
   if (list.summary?.value && list.summary.value !== d.summary?.value) parts.push(`一覧ページの概要: ${stripHtml(list.summary.value)}`);
   if (list.published_at?.raw && list.published_at.raw !== pub) parts.push(`一覧ページの日付: ${list.published_at.raw}`);
-  if (d.content?.kind === "inline") parts.push(`本文: ${stripHtml(d.content.value)}`);
-  if (d.native.format === "html") {
-    for (const [k, v] of Object.entries(d.native.extracted_fields)) {
-      if (["title", "summary", "content", "link", "image"].includes(k)) continue;
-      if (typeof v === "string" && v.length < 500) parts.push(`${k}: ${v}`);
-    }
+  // 一覧・詳細ページで取った独自フィールド（会期など）。フィードの item でも詳細ページ側の値を渡す。
+  // 本文より前に置き、長い本文で切り落とされないようにする
+  const extracted = { ...(list.native.format === "html" ? list.native.extracted_fields : {}), ...(det?.native.format === "html" ? det.native.extracted_fields : {}) };
+  for (const [k, v] of Object.entries(extracted)) {
+    if (["title", "summary", "content", "link", "image", "thumbnail"].includes(k)) continue;
+    const s = Array.isArray(v) ? v.filter((x) => typeof x === "string").join(", ") : v;
+    if (typeof s === "string" && s && s.length < 500) parts.push(`${k}: ${stripHtml(s)}`);
   }
+  if (d.content?.kind === "inline") parts.push(`本文: ${stripHtml(d.content.value)}`);
   return parts.join("\n").slice(0, TEXT_LIMIT);
 }
 

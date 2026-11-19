@@ -8,5 +8,5 @@ const where = process.argv.includes("--remote") ? "--remote" : "--local";
 const token = randomBytes(32).toString("hex");
 const hash = createHash("sha256").update(token).digest("hex");
 const sql = `INSERT INTO crawler_workers (id, name, token_hash, scopes, created_at) VALUES ('${randomUUID()}', '${name.replace(/'/g, "")}', '${hash}', 'jobs:lease,runs:write,probes:write', '${new Date().toISOString()}')`;
-execFileSync("npx", ["wrangler", "d1", "execute", "web-subscriber-db", where, "--command", sql], { stdio: ["ignore", "ignore", "inherit"] });
+execFileSync("npx", ["wrangler", "d1", "execute", "web-subscriber-db-apac", where, "--command", sql], { stdio: ["ignore", "ignore", "inherit"] });
 console.log(token);
