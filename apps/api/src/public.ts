@@ -1006,5 +1006,15 @@ a.row-link:hover .row-title { color: var(--accent); text-decoration: underline; 
   .entry-link { gap: 12px; padding: 18px 0; }
   .thumb { width: 96px; }
   .entry-title { font-size: 17px; }
+  /* カードはスマホでは横並び（左に正方形の画像、右に本文）にして一覧性を上げる */
+  .cards { grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
+  .card-link { flex-direction: row; align-items: stretch; }
+  .card-media { flex: 0 0 104px; width: 104px; aspect-ratio: auto; min-height: 104px; }
+  .card-noimg { padding: 6px; font-size: 11px; gap: 4px; }
+  .card-body { flex: 1; min-width: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .card .entry-title { font-size: 15px; line-height: 1.4; margin: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .excerpt { font-size: 12px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .entry-meta, .card .fields, .card .period { font-size: 12px; margin: 0; }
+  .card .fields { gap: 0 12px; }
 }
 `;

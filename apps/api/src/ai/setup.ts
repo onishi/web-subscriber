@@ -1,6 +1,7 @@
 // AI による初期設定・修正提案（Cloudflare Workflows）。docs/design.md §7
 // AI が試したい操作はすべて VPS へのプローブジョブに変換し、結果を待ってから次のターンへ進む。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { titleWarnings } from "./quality";
 import { GoogleGenAI, type Content, type Part, type FunctionDeclaration } from "@google/genai";
 import { parseConfig, identityScheme, hashScheme, schemeHash, DetailSchema, type DetailConfig, type SubscriptionConfig, type ProbeRequest } from "@ws/shared";
 import { type Env, newId, nowIso, json } from "../env.js";
@@ -102,6 +103,7 @@ function summarizeExtraction(summary: unknown): unknown {
       field_fill: r.field_fill,
       channel_title: (r.channel as { title?: { value?: string } } | null)?.title?.value,
       items_sample: (r.items as unknown[] | undefined)?.slice(0, 6),
+      warnings: titleWarnings((r.items as { title?: unknown }[] | undefined) ?? []),
     };
   }
   return out;
@@ -328,6 +330,9 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
 
   private async aiLoop(step: WorkflowStep, p: SetupParams, discovery: Record<string, unknown>): Promise<Proposal> {
     const env = this.env;
+    // 直近の run_extraction で見つかったタイトルの問題。未対応のまま提出されたら一度だけ差し戻す
+    let lastWarnings: string[] = [];
+    let bounced = false;
     return this.toolLoop<Proposal>(step, p, {
       prefix: "ai",
       system: SYSTEM_PROMPT,
@@ -359,6 +364,10 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
         const parsed = parseConfig(input.config);
         if (!parsed.ok) return { error: "スキーマ検証エラー:\n" + parsed.errors.join("\n") };
         if (!sameSite(parsed.config.source.url, p.url)) return { error: "source.url は登録URLと同じサイトでなければなりません" };
+        if (lastWarnings.length && !bounced) {
+          bounced = true;
+          return { error: "直近の run_extraction に次の問題があります。直して run_extraction で確認してから提出し直してください（直せない場合は理由を unverified に書いて再提出）:\n" + lastWarnings.join("\n") };
+        }
         return {
           value: {
             config: parsed.config,
@@ -378,7 +387,11 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
           const methods = (Array.isArray(input.methods) ? input.methods : [parsed.config.fetch.method]).filter((m: unknown) => m === "http" || m === "browser") as ("http" | "browser")[];
           return {
             req: { kind: "extract", config: parsed.config, max_pages: Math.min(Math.max(Number(input.max_pages ?? 2), 1), 3), methods: methods.length ? methods : [parsed.config.fetch.method] },
-            summarize: summarizeExtraction,
+            summarize: (summary: unknown) => {
+              const out = summarizeExtraction(summary) as Record<string, { warnings?: string[] }>;
+              lastWarnings = [...new Set(Object.values(out).flatMap((r) => r?.warnings ?? []))];
+              return out;
+            },
           };
         }
         return { error: `unknown tool ${name}` };
@@ -538,6 +551,8 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       const fill = Object.entries(detail.field_fill);
       checks.push({ name: "詳細ページのフィールド", ok: fill.some(([k, v]) => (k === "summary" || k === "content") && v >= 0.8), detail: fill.map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(" / ") });
     }
+    const tw = titleWarnings(main.items as { title?: unknown }[]);
+    checks.push({ name: "タイトル", ok: tw.length === 0, detail: tw.length ? tw.map((w) => w.split("。")[0]).join(" / ") : "見出しらしいタイトルが取れている" });
     const ff = main.field_fill;
     if (ff && ff.published_at < 0.5) unverified.push(`公開日時を取得できたitemは ${Math.round(ff.published_at * 100)}%`);
 
