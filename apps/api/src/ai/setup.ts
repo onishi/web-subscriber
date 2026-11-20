@@ -73,6 +73,21 @@ function truncateJson(v: unknown, max = 24000): string {
   return s.length > max ? s.slice(0, max) + `…(truncated ${s.length - max} chars)` : s;
 }
 
+/** 購読の目的（表示名・所属セットとそのカスタムフィールド）を AI に伝える前置き */
+async function purposeNote(env: Env, subscriptionId: string): Promise<string> {
+  const sub = await env.DB.prepare("SELECT display_title FROM subscriptions WHERE id = ?").bind(subscriptionId).first<{ display_title: string | null }>();
+  const sets = await env.DB.prepare("SELECT st.id, st.name FROM set_members m JOIN sets st ON st.id = m.set_id WHERE m.subscription_id = ?").bind(subscriptionId).all<{ id: string; name: string }>();
+  const lines: string[] = [];
+  if (sub?.display_title) lines.push(`購読の名前: ${sub.display_title}`);
+  for (const st of sets.results ?? []) {
+    const f = await env.DB.prepare("SELECT label, type, description FROM set_fields WHERE set_id = ? ORDER BY position").bind(st.id).all<{ label: string; type: string; description: string }>();
+    const fs = (f.results ?? []).map((x) => `${x.label}(${x.type})${x.description ? `: ${x.description}` : ""}`);
+    lines.push(`所属セット「${st.name}」${fs.length ? `（item ごとに取り出す項目: ${fs.join(" / ")}）` : ""}`);
+  }
+  if (!lines.length) return "";
+  return `# 購読の目的（利用者が付けた名前とセット。item はこの目的に合うものにする）\n<untrusted_page_data>\n${lines.join("\n")}\n</untrusted_page_data>\n\n`;
+}
+
 /** run_extraction の結果を AI 向けに要約 */
 function summarizeExtraction(summary: unknown): unknown {
   const s = summary as Record<string, Record<string, unknown>>;
@@ -332,6 +347,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
     const env = this.env;
     // 直近の run_extraction で見つかったタイトルの問題。未対応のまま提出されたら一度だけ差し戻す
     let lastWarnings: string[] = [];
+    const tried = new Set<string>();
     let bounced = false;
     return this.toolLoop<Proposal>(step, p, {
       prefix: "ai",
@@ -352,13 +368,30 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
         } else if (p.kind === "repair") {
           const sub = await env.DB.prepare("SELECT active_config_version_id FROM subscriptions WHERE id = ?").bind(p.subscriptionId).first<{ active_config_version_id: string }>();
           const cv = sub && (await env.DB.prepare("SELECT config_json FROM config_versions WHERE id = ?").bind(sub.active_config_version_id).first<{ config_json: string }>());
-          const run = p.triggerRunId ? await env.DB.prepare("SELECT end_reason, error_stage, error_detail FROM crawl_runs WHERE id = ?").bind(p.triggerRunId).first() : null;
-          const pages = p.triggerRunId ? await env.DB.prepare("SELECT seq, http_status, extract_status, item_count, error, field_failures_json FROM crawl_pages WHERE run_id = ? ORDER BY seq").bind(p.triggerRunId).all() : null;
-          intro =
-            `これは稼働中の購読設定の「修正提案」です。現在の設定で抽出が失敗しています。現行設定をできるだけ保ちながら、壊れた部分（セレクタ・待機条件など）を直してください。識別方法（identity）は既存itemとの照合のため、可能な限り変えないでください。\n\n現行設定:\n${cv?.config_json}\n\n失敗した実行:\n${JSON.stringify(run)}\n${JSON.stringify(pages?.results)}\n\n` +
-            intro;
+          const run = p.triggerRunId
+            ? await env.DB.prepare("SELECT run_status, extract_status, end_reason, error_stage, error_detail FROM crawl_runs WHERE id = ?").bind(p.triggerRunId).first<{ run_status: string; extract_status: string | null }>()
+            : null;
+          const failed = !run || run.run_status === "failed" || run.extract_status === "failed";
+          if (failed) {
+            const pages = p.triggerRunId ? await env.DB.prepare("SELECT seq, http_status, extract_status, item_count, error, field_failures_json FROM crawl_pages WHERE run_id = ? ORDER BY seq").bind(p.triggerRunId).all() : null;
+            intro =
+              `これは稼働中の購読設定の「修正提案」です。現在の設定で抽出が失敗しています。現行設定をできるだけ保ちながら、壊れた部分（セレクタ・待機条件など）を直してください。識別方法（identity）は既存itemとの照合のため、可能な限り変えないでください。\n\n現行設定:\n${cv?.config_json}\n\n失敗した実行:\n${JSON.stringify(run)}\n${JSON.stringify(pages?.results)}\n\n` +
+              intro;
+          } else {
+            // 抽出は動いているが、利用者が内容に満足していない（タイトルが定型文、関係ないブロックが混ざる等）
+            const cur = await env.DB.prepare("SELECT title_text, primary_link FROM items WHERE subscription_id = ? ORDER BY last_seen_at DESC LIMIT 20").bind(p.subscriptionId).all<{ title_text: string | null; primary_link: string | null }>();
+            const rows = cur.results ?? [];
+            const warns = titleWarnings(rows.map((r) => ({ title: r.title_text ?? "" })));
+            intro =
+              `これは稼働中の購読設定の「見直し」です。抽出自体は成功していますが、利用者が内容の質に満足していません。今取れている item を点検し、購読の目的（下記）に合う item が、正しいタイトルで取れる設定に作り直してください。` +
+              `現行設定に縛られる必要はありません。登録URLが種類の違うブロックの並ぶトップページなら、同じサイトの専用一覧ページを探して source.url を変えてください。識別方法（identity）は変わってもかまいません。detail は現行のものを引き継ぐので、config の detail は null にしてください。\n\n` +
+              `現行設定:\n${cv?.config_json}\n\n今取れている item（タイトル / URL）:\n<untrusted_page_data>\n${rows.map((r) => `- ${r.title_text ?? ""} / ${r.primary_link ?? ""}`).join("\n")}\n</untrusted_page_data>\n` +
+              (warns.length ? `見つかった問題:\n${warns.join("\n")}\n` : "") +
+              "\n" +
+              intro;
+          }
         }
-        return intro + "\n\nツールで検証しながら設定を作り、submit_config で提出してください。";
+        return (await purposeNote(env, p.subscriptionId)) + intro + "\n\nツールで検証しながら設定を作り、submit_config で提出してください。";
       },
       submit: (input) => {
         const parsed = parseConfig(input.config);
@@ -381,6 +414,10 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       tool: (name, input) => {
         if (name === "inspect") return inspectReq(input, p.url);
         if (name === "run_extraction") {
+          // 同じ設定での再実行は結果が変わらないので、VPS に投げずに返す
+          const sig = JSON.stringify([input.config, input.methods ?? null, input.max_pages ?? null]);
+          if (tried.has(sig)) return { error: "この設定・方式では既に run_extraction を実行済みです（結果は前回と同じです）。直すなら設定を変えてから実行し、問題がなければ submit_config で提出してください。" };
+          tried.add(sig);
           const parsed = parseConfig(input.config);
           if (!parsed.ok) return { error: "スキーマ検証エラー:\n" + parsed.errors.join("\n") };
           if (!sameSite(parsed.config.source.url, p.url)) return { error: "登録URLと同じサイトのURLのみ調査できます" };
