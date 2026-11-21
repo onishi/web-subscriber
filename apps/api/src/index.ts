@@ -34,6 +34,13 @@ app.post("/api/dev/tick", async (c) => {
 
 // MCP サーバー（AI クライアントから全機能を操作）。認証は個人アクセストークン。Cloudflare Access では /mcp を Bypass にしてある
 app.all("/mcp", (c) => handleMcp(c.req.raw, c.env, c.executionCtx as ExecutionContext, (r) => Promise.resolve(app.fetch(r, c.env, c.executionCtx))));
+// ヘッダーを付けられないクライアント（ChatGPT のコネクタなど）向け：URL にトークンを含める形式 /mcp/wst_…
+app.all("/mcp/:token{wst_[0-9a-f]+}", (c) => {
+  const headers = new Headers(c.req.raw.headers);
+  headers.set("Authorization", `Bearer ${c.req.param("token")}`);
+  const req = new Request(c.req.raw, { headers });
+  return handleMcp(req, c.env, c.executionCtx as ExecutionContext, (r) => Promise.resolve(app.fetch(r, c.env, c.executionCtx)));
+});
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 

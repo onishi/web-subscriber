@@ -60,6 +60,10 @@ export function SettingsPage() {
             <pre className="copyable">{cli}</pre>
             <p className="muted">設定ファイル（.mcp.json など）に書く場合：</p>
             <pre className="copyable">{jsonCfg}</pre>
+            <p className="muted">
+              ChatGPT など、ヘッダーを設定できないクライアント向けの URL（認証は「なし」を選択。URL 自体が鍵なので他人に見せないでください）：
+            </p>
+            <pre className="copyable">{`${url}/${issued.token}`}</pre>
             <button onClick={() => setIssued(null)}>閉じる</button>
           </div>
         )}
