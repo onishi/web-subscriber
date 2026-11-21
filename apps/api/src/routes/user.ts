@@ -861,8 +861,7 @@ const tokenAdminOnly = (c: { get(k: "authVia"): string }) => c.get("authVia") ==
 userApi.get("/tokens", async (c) => {
   if (tokenAdminOnly(c)) return c.json({ error: "forbidden" }, 403);
   const rs = await c.env.DB.prepare("SELECT id, name, prefix, created_at, last_used_at FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC").bind(c.get("userId")).all();
-  // reader は Cloudflare Access の内側なので、MCP クライアントには radar 側の URL を案内する
-  const mcp_url = c.env.PUBLIC_HOST ? `https://${c.env.PUBLIC_HOST}/mcp` : `${new URL(c.req.url).origin}/mcp`;
+  const mcp_url = `${new URL(c.req.url).origin}/mcp`;
   return c.json({ tokens: rs.results, mcp_url });
 });
 
