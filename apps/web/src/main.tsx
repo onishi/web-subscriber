@@ -11,6 +11,7 @@ import { RunPage } from "./pages/Run.js";
 import { ConfigPage } from "./pages/Config.js";
 import { SetsNav, SetsPage, SetPage } from "./pages/Sets.js";
 import { KeyboardHelp } from "./Help.js";
+import { SettingsPage } from "./pages/Settings.js";
 
 function App() {
   return (
@@ -23,6 +24,9 @@ function App() {
         <NavLink to="/subscriptions">購読先</NavLink>
         <NavLink to="/add">購読を追加</NavLink>
         <SetsNav />
+        <NavLink to="/settings" className="nav-settings">
+          設定
+        </NavLink>
       </nav>
       <main>
         <Routes>
@@ -35,6 +39,7 @@ function App() {
           <Route path="/configs/:id" element={<ConfigPage />} />
           <Route path="/sets" element={<SetsPage />} />
           <Route path="/sets/:id" element={<SetPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
       <KeyboardHelp />

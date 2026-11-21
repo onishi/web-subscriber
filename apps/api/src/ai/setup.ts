@@ -26,7 +26,7 @@ interface Proposal {
   origin: "ai_setup" | "ai_repair" | "ai_detail" | "heuristic";
 }
 
-const MAX_TURNS = 16;
+const MAX_TURNS = 24;
 
 type StepCfg = Parameters<WorkflowStep["do"]>[1];
 /** step.do の型付きラッパー（戻り値は JSON シリアライズ可能であること） */
@@ -71,6 +71,18 @@ function sameSite(a: string, b: string): boolean {
 function truncateJson(v: unknown, max = 24000): string {
   const s = JSON.stringify(v);
   return s.length > max ? s.slice(0, max) + `…(truncated ${s.length - max} chars)` : s;
+}
+
+/** 必須でないフィールドの変換エラーで item が無効になっているときの助言 */
+function optionalFieldWarnings(r: Record<string, unknown>): string[] {
+  const pages = (r.pages as { field_failures?: Record<string, { error?: number; reasons?: string[] }> }[] | undefined) ?? [];
+  const bad = new Set<string>();
+  for (const pg of pages) for (const [k, v] of Object.entries(pg.field_failures ?? {})) if ((v.error ?? 0) > 0 && k !== "title" && k !== "link") bad.add(k);
+  if (!bad.size) return [];
+  return [
+    `フィールド ${[...bad].join(", ")} の変換エラー（parse_date 等）で item が無効になっています。変換エラーは必須でないフィールドでも item 全体を無効にします。` +
+      `会期のような範囲表記は無理に日付へ変換せず、テキストのまま period（任意名）で取ってください（開始日・終了日はセットのフィールドで後から取り出されます）。published_at は確実に取れる場合だけ指定してください。`,
+  ];
 }
 
 /** 購読の目的（表示名・所属セットとそのカスタムフィールド）を AI に伝える前置き */
@@ -118,7 +130,7 @@ function summarizeExtraction(summary: unknown): unknown {
       field_fill: r.field_fill,
       channel_title: (r.channel as { title?: { value?: string } } | null)?.title?.value,
       items_sample: (r.items as unknown[] | undefined)?.slice(0, 6),
-      warnings: titleWarnings((r.items as { title?: unknown }[] | undefined) ?? []),
+      warnings: [...titleWarnings((r.items as { title?: unknown }[] | undefined) ?? []), ...optionalFieldWarnings(r)],
     };
   }
   return out;
@@ -246,6 +258,14 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
           try {
             proposal = await this.aiLoop(step, p, discovery);
           } catch (e) {
+            // 見直し（指示つき、または抽出は成功している）では、自動判定は今の設定と同じものしか作れないので失敗として返す
+            const review = await sdo(step, "is-review", async () => {
+              if (p.kind !== "repair") return false;
+              if (p.instruction) return true;
+              const run = p.triggerRunId ? await env.DB.prepare("SELECT run_status, extract_status FROM crawl_runs WHERE id = ?").bind(p.triggerRunId).first<{ run_status: string; extract_status: string | null }>() : null;
+              return !!run && run.run_status !== "failed" && run.extract_status !== "failed";
+            });
+            if (review) throw new Error(`AIが新しい設定を作れませんでした（${(e as Error).message}）。指示を足して「AIで設定を見直す」をやり直してください`);
             await sdo(step, "ai-failed", async () => addProgress(env, sid, "ai-error", "error", `AI提案に失敗したため自動判定に切り替えます: ${(e as Error).message}`));
           }
         } else {

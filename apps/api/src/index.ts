@@ -8,6 +8,7 @@ import { finalizeExpiredRun } from "./ingest.js";
 import { completeHooks, markProbeFailed } from "./hooks.js";
 import { processFieldExtractions } from "./fields.js";
 import { notFound, publicPages } from "./public.js";
+import { handleMcp } from "./mcp.js";
 
 export { SetupWorkflow } from "./ai/setup.js";
 
@@ -31,10 +32,15 @@ app.post("/api/dev/tick", async (c) => {
   return c.json(await runTick(c.env));
 });
 
+// MCP サーバー（AI クライアントから全機能を操作）。認証は個人アクセストークン
+app.all("/mcp", (c) => handleMcp(c.req.raw, c.env, c.executionCtx as ExecutionContext, (r) => Promise.resolve(app.fetch(r, c.env, c.executionCtx))));
+
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 /** 公開ページ専用ホスト（radar）：公開ページ以外は返さない */
 const radar = new Hono<{ Bindings: Env }>();
+// radar 側にも MCP を置く（reader は Cloudflare Access の内側なので、Access の Bypass を設定するまではこちらを使う）
+radar.all("/mcp", (c) => handleMcp(c.req.raw, c.env, c.executionCtx as ExecutionContext, (r) => Promise.resolve(app.fetch(r, c.env, c.executionCtx))));
 radar.get("/robots.txt", (c) => c.text("User-agent: *\nAllow: /\n"));
 radar.route("/", publicPages);
 radar.all("*", (c) => c.html(notFound(), 404));

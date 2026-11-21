@@ -1,7 +1,7 @@
 // 利用者向け API（docs/design.md §8）
 import { Hono } from "hono";
 import { parseConfig, identityScheme, hashScheme, schemeHash, mergeDetail, type ChannelData, type ItemData, type SubscriptionConfig } from "@ws/shared";
-import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt } from "../env.js";
+import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt, sha256, randomToken } from "../env.js";
 import { type AppVars } from "../auth.js";
 import { enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
 import { startSession } from "../ai/setup.js";
@@ -854,3 +854,32 @@ function previewToken(): string {
   const b = crypto.getRandomValues(new Uint8Array(18));
   return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+// ---- 個人アクセストークン（MCP・API 用）。トークンでのアクセスからは操作できない ----
+const tokenAdminOnly = (c: { get(k: "authVia"): string }) => c.get("authVia") === "token";
+
+userApi.get("/tokens", async (c) => {
+  if (tokenAdminOnly(c)) return c.json({ error: "forbidden" }, 403);
+  const rs = await c.env.DB.prepare("SELECT id, name, prefix, created_at, last_used_at FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC").bind(c.get("userId")).all();
+  // reader は Cloudflare Access の内側なので、MCP クライアントには radar 側の URL を案内する
+  const mcp_url = c.env.PUBLIC_HOST ? `https://${c.env.PUBLIC_HOST}/mcp` : `${new URL(c.req.url).origin}/mcp`;
+  return c.json({ tokens: rs.results, mcp_url });
+});
+
+userApi.post("/tokens", async (c) => {
+  if (tokenAdminOnly(c)) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json<{ name?: string }>().catch(() => ({}) as { name?: string });
+  const name = (b.name ?? "").trim().slice(0, 60) || "MCP";
+  const token = `wst_${randomToken(24)}`;
+  const id = newId();
+  await c.env.DB.prepare("INSERT INTO api_tokens (id, user_id, name, token_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(id, c.get("userId"), name, await sha256(token), token.slice(0, 10), nowIso())
+    .run();
+  return c.json({ id, name, token }, 201);
+});
+
+userApi.delete("/tokens/:id", async (c) => {
+  if (tokenAdminOnly(c)) return c.json({ error: "forbidden" }, 403);
+  await c.env.DB.prepare("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND user_id = ?").bind(nowIso(), c.req.param("id"), c.get("userId")).run();
+  return c.json({ ok: true });
+});
