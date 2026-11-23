@@ -15,3 +15,15 @@ describe("titleWarnings", () => {
     expect(titleWarnings([{ title: "禅とジブリ" }, { title: "モネ展" }, { title: "More Than Words 展" }])).toEqual([]);
   });
 });
+
+import { fieldKeyErrors } from "../src/ai/quality";
+describe("missing titles and bad field keys", () => {
+  it("warns when titles are missing", () => {
+    expect(titleWarnings([{}, {}]).some((w) => w.includes("タイトルが取れていません"))).toBe(true);
+  });
+  it("rejects brace-prefixed keys and missing title", () => {
+    const e = fieldKeyErrors({ source: { kind: "html" }, extract: { items: { fields: { "{title": {}, link: {} } } } });
+    expect(e.length).toBe(2);
+    expect(fieldKeyErrors({ source: { kind: "html" }, extract: { items: { fields: { title: {}, link: {} } } } })).toEqual([]);
+  });
+});

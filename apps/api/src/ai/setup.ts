@@ -1,7 +1,7 @@
 // AI による初期設定・修正提案（Cloudflare Workflows）。docs/design.md §7
 // AI が試したい操作はすべて VPS へのプローブジョブに変換し、結果を待ってから次のターンへ進む。
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { titleWarnings } from "./quality";
+import { fieldKeyErrors, titleWarnings } from "./quality";
 import { GoogleGenAI, type Content, type Part, type FunctionDeclaration } from "@google/genai";
 import { parseConfig, identityScheme, hashScheme, schemeHash, DetailSchema, type DetailConfig, type SubscriptionConfig, type ProbeRequest } from "@ws/shared";
 import { type Env, newId, nowIso, json } from "../env.js";
@@ -167,6 +167,8 @@ function heuristicProposal(url: string, d: Record<string, unknown>, current?: Su
   const useHttp = !!staticTop && (!browserTop || staticTop.item_selector === browserTop.item_selector);
   const top = useHttp ? staticTop : browserTop;
   if (!top) throw new Error("繰り返し構造が見つからず、自動で設定案を作れませんでした");
+  // item 自体がリンク（… > a）なら、タイトルとリンクは item 自身から取る（子孫の a は無い）
+  const selfLink = /(^|[\s>+~])a([.#:\[][^\s>+~]*)?$/.test(top.item_selector.trim());
   const r = parseConfig({
     schema_version: 1,
     source: { url, kind: "html" },
@@ -176,8 +178,12 @@ function heuristicProposal(url: string, d: Record<string, unknown>, current?: Su
         container: { css: top.container },
         select: { css: top.item_selector },
         fields: {
-          title: { from: { css: "a" }, cardinality: "first", take: "text", transforms: ["collapse_whitespace"], required: true, fallback: [{ take: "text", transforms: ["collapse_whitespace"] }] },
-          link: { from: { css: "a[href]" }, cardinality: "first", take: { attr: "href" }, transforms: [{ resolve_url: {} }], required: true },
+          title: selfLink
+            ? { take: "text", transforms: ["collapse_whitespace"], required: true }
+            : { from: { css: "a" }, cardinality: "first", take: "text", transforms: ["collapse_whitespace"], required: true, fallback: [{ take: "text", transforms: ["collapse_whitespace"] }] },
+          link: selfLink
+            ? { take: { attr: "href" }, transforms: [{ resolve_url: {} }], required: true }
+            : { from: { css: "a[href]" }, cardinality: "first", take: { attr: "href" }, transforms: [{ resolve_url: {} }], required: true },
           published_at: {
             from: { css: "time" },
             cardinality: "first",
@@ -344,7 +350,8 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       const result = await sdo(step, "finalize", async () => this.finalize(p, fp, v1, v2, detailCheck));
       await sdo(step, "done", async () => addProgress(env, sid, "validate", "done", result.headline));
       // 新規の購読：チェックが全部通っていれば確認待ちにせず自動で採用して巡回を始める
-      if (p.kind === "setup" && result.allOk) {
+      // （AI が作れず自動判定にした設定は質が読めないので、人の確認に回す）
+      if (p.kind === "setup" && result.allOk && fp.origin !== "heuristic") {
         await sdo(step, "auto-activate", async () => {
           const sub = await env.DB.prepare("SELECT status FROM subscriptions WHERE id = ?").bind(p.subscriptionId).first<{ status: string }>();
           if (sub?.status !== "setup") return;
@@ -450,6 +457,8 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
         const parsed = parseConfig(input.config);
         if (!parsed.ok) return { error: "スキーマ検証エラー:\n" + parsed.errors.join("\n") };
         if (!sameSite(parsed.config.source.url, p.url)) return { error: "source.url は登録URLと同じサイトでなければなりません" };
+        const keyErr = fieldKeyErrors(parsed.config);
+        if (keyErr.length) return { error: keyErr.join("\n") };
         if (lastWarnings.length && !bounced) {
           bounced = true;
           return { error: "直近の run_extraction に次の問題があります。直して run_extraction で確認してから提出し直してください（直せない場合は理由を unverified に書いて再提出）:\n" + lastWarnings.join("\n") };
@@ -474,6 +483,8 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
           const parsed = parseConfig(input.config);
           if (!parsed.ok) return { error: "スキーマ検証エラー:\n" + parsed.errors.join("\n") };
           if (!sameSite(parsed.config.source.url, p.url)) return { error: "登録URLと同じサイトのURLのみ調査できます" };
+          const keyErr = fieldKeyErrors(parsed.config);
+          if (keyErr.length) return { error: keyErr.join("\n") };
           const methods = (Array.isArray(input.methods) ? input.methods : [parsed.config.fetch.method]).filter((m: unknown) => m === "http" || m === "browser") as ("http" | "browser")[];
           return {
             req: { kind: "extract", config: parsed.config, max_pages: Math.min(Math.max(Number(input.max_pages ?? 2), 1), 3), methods: methods.length ? methods : [parsed.config.fetch.method] },
