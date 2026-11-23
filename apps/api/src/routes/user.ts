@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { parseConfig, identityScheme, hashScheme, schemeHash, mergeDetail, type ChannelData, type ItemData, type SubscriptionConfig } from "@ws/shared";
 import { type Env, newId, nowIso, json, scheduleMinute, nextRunAt, sha256, randomToken } from "../env.js";
 import { type AppVars } from "../auth.js";
-import { enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
+import { activateConfig, enqueueCrawl, enqueueProbe, type SubRow } from "../jobs.js";
 import { startSession } from "../ai/setup.js";
 import { normalizePublicOptions, SLUG_RE, type PublicOptions } from "../public.js";
 import { FIELD_KEY_RE, FIELD_TYPES, buildFieldQuery, displayValue, loadFields, processFieldExtractions, refreshFieldsHash, setManualValues, revertManualValues, type FieldType, type SetField } from "../fields.js";
@@ -251,30 +251,9 @@ userApi.post("/configs/:id/validate", async (c) => {
 });
 
 userApi.post("/configs/:id/activate", async (c) => {
-  const cv = await c.env.DB.prepare("SELECT * FROM config_versions WHERE id = ?").bind(c.req.param("id")).first<{ id: string; subscription_id: string; state: string; version: number }>();
-  if (!cv) return c.json({ error: "not_found" }, 404);
-  if (cv.state === "active") return c.json({ ok: true });
-  const s = (await getSub(c.env, cv.subscription_id))!;
-  const now = nowIso();
-  const status = s.status === "setup" ? "active" : s.status;
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE config_versions SET state = 'superseded' WHERE subscription_id = ? AND state = 'active'").bind(s.id),
-    c.env.DB.prepare("UPDATE config_versions SET state = 'active', activated_at = ? WHERE id = ?").bind(now, cv.id),
-    // 採用した設定より古い下書きは使われないので片付ける（破棄と同じ扱い）
-    c.env.DB.prepare("UPDATE config_versions SET state = 'rejected' WHERE subscription_id = ? AND state = 'draft' AND version < ?").bind(s.id, cv.version),
-    c.env.DB.prepare("UPDATE subscriptions SET active_config_version_id = ?, status = ?, next_run_at = ?, consecutive_extract_failures = 0, updated_at = ? WHERE id = ?").bind(
-      cv.id,
-      status,
-      status === "active" ? nextRunAt(s.schedule_minute_of_day, s.schedule_interval_minutes, s.timezone) : s.next_run_at,
-      now,
-      s.id,
-    ),
-    // 旧設定の未実行ジョブは取り消し、新設定で実行する
-    c.env.DB.prepare("UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE subscription_id = ? AND kind = 'crawl' AND status = 'queued'").bind(now, s.id),
-  ]);
-  const fresh = (await getSub(c.env, s.id))!;
-  const run = status === "active" ? await enqueueCrawl(c.env, fresh, "activation") : null;
-  return c.json({ ok: true, run });
+  const r = await activateConfig(c.env, c.req.param("id"));
+  if (!r) return c.json({ error: "not_found" }, 404);
+  return c.json(r);
 });
 
 userApi.post("/configs/:id/reject", async (c) => {

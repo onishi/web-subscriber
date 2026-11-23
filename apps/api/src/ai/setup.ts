@@ -5,7 +5,7 @@ import { titleWarnings } from "./quality";
 import { GoogleGenAI, type Content, type Part, type FunctionDeclaration } from "@google/genai";
 import { parseConfig, identityScheme, hashScheme, schemeHash, DetailSchema, type DetailConfig, type SubscriptionConfig, type ProbeRequest } from "@ws/shared";
 import { type Env, newId, nowIso, json } from "../env.js";
-import { enqueueProbe } from "../jobs.js";
+import { activateConfig, enqueueProbe } from "../jobs.js";
 import { SYSTEM_PROMPT, TOOLS, DETAIL_SYSTEM_PROMPT, DETAIL_TOOLS } from "./prompt.js";
 
 export interface SetupParams {
@@ -225,6 +225,9 @@ function inspectReq(input: Record<string, unknown>, siteUrl: string): { req: Pro
   return { req: { kind: "inspect", url, method: input.method === "browser" ? "browser" : "http", selector: input.selector as { css: string }, wait_ms: Number(input.wait_ms ?? 0) || undefined } };
 }
 
+/** 一時的とみなす取得エラー（やり直せば通る可能性があるもの） */
+const TRANSIENT_RE = /timeout|timed out|network_error|navigation_error|net::ERR_|Execution context was destroyed|ECONNRESET|ECONNREFUSED|socket hang up|lease expired/i;
+
 export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
   async run(event: WorkflowEvent<SetupParams>, step: WorkflowStep) {
     const p = event.payload;
@@ -299,7 +302,14 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       await sdo(step, "validate-start", async () => addProgress(env, sid, "validate", "running", "設定案をVPSで実行して検証"));
       const listCfg: SubscriptionConfig = { ...prop.config, detail: null };
       const methods: ("http" | "browser")[] = listCfg.source.kind === "feed" ? ["http"] : listCfg.fetch.method === "browser" ? ["browser", "http"] : ["http", "browser"];
-      const v1 = (await this.probe(step, sid, "validate-1", { kind: "extract", config: listCfg, max_pages: 3, methods })) as Record<string, ValResult>;
+      let v1 = (await this.probe(step, sid, "validate-1", { kind: "extract", config: listCfg, max_pages: 3, methods })) as Record<string, ValResult>;
+      // 通信エラー（タイムアウト・接続エラー）で0件なら、少し待って一度だけやり直す
+      const first = v1[listCfg.fetch.method];
+      if (first && !("error" in first) && first.item_count === 0 && TRANSIENT_RE.test(`${first.outcome.end_reason} ${first.outcome.error_detail ?? ""}`)) {
+        await sdo(step, "validate-1-retry-note", async () => addProgress(env, sid, "validate", "info", `通信エラーのため検証をやり直します（${first.outcome.end_reason}）`));
+        await step.sleep("validate-1-retry-wait", "2 minutes");
+        v1 = (await this.probe(step, sid, "validate-1b", { kind: "extract", config: listCfg, max_pages: 3, methods })) as Record<string, ValResult>;
+      }
       const v2 = (await this.probe(step, sid, "validate-2", { kind: "extract", config: listCfg, max_pages: 3, methods: [listCfg.fetch.method] })) as Record<string, ValResult>;
 
       // 4) 詳細ページ：一覧に本文がなければ、リンク先から取るルールを AI が作る
@@ -333,6 +343,15 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       const fp = prop;
       const result = await sdo(step, "finalize", async () => this.finalize(p, fp, v1, v2, detailCheck));
       await sdo(step, "done", async () => addProgress(env, sid, "validate", "done", result.headline));
+      // 新規の購読：チェックが全部通っていれば確認待ちにせず自動で採用して巡回を始める
+      if (p.kind === "setup" && result.allOk) {
+        await sdo(step, "auto-activate", async () => {
+          const sub = await env.DB.prepare("SELECT status FROM subscriptions WHERE id = ?").bind(p.subscriptionId).first<{ status: string }>();
+          if (sub?.status !== "setup") return;
+          await activateConfig(env, result.cvId);
+          await addProgress(env, sid, "activate", "done", "検証がすべて通ったため自動で採用し、巡回を開始しました");
+        });
+      }
     } catch (e) {
       await sdo(step, "fail", async () => {
         await addProgress(env, sid, "error", "error", (e as Error).message);
@@ -343,6 +362,20 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
 
   /** プローブを投入し、完了イベント（または DB 状態）を待って結果を返す */
   private async probe(step: WorkflowStep, sid: string, name: string, req: ProbeRequest): Promise<unknown> {
+    // 通信エラーなど一時的な失敗は、少し待って2回までやり直す
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.probeOnce(step, sid, attempt === 0 ? name : `${name}-r${attempt}`, req);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (attempt >= 2 || !TRANSIENT_RE.test(msg)) throw e;
+        await sdo(step, `${name}-retry-note-${attempt}`, async () => addProgress(this.env, sid, name, "info", `一時的なエラーのためやり直します: ${msg.slice(0, 120)}`));
+        await step.sleep(`${name}-retry-wait-${attempt}`, attempt === 0 ? "1 minute" : "3 minutes");
+      }
+    }
+  }
+
+  private async probeOnce(step: WorkflowStep, sid: string, name: string, req: ProbeRequest): Promise<unknown> {
     const env = this.env;
     const probeId = await sdo(step, `${name}-enqueue`, async () => enqueueProbe(env, sid, req));
     for (let i = 0; i < 4; i++) {
@@ -672,7 +705,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       env.DB.prepare("UPDATE setup_sessions SET status = 'ready', result_config_version_id = ?, report_key = ?, updated_at = ? WHERE id = ?").bind(cvId, reportKey, nowIso(), p.sessionId),
     ]);
     const ok = checks.filter((c) => c.ok).length;
-    return { headline: `検証 ${ok}/${checks.length} 項目OK・${main.item_count}件・未検証 ${unverified.length}件`, cvId };
+    return { headline: `検証 ${ok}/${checks.length} 項目OK・${main.item_count}件・未検証 ${unverified.length}件`, cvId, allOk: ok === checks.length && main.item_count > 0 };
   }
 }
 

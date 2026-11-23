@@ -56,6 +56,35 @@ export async function enqueueCrawl(env: Env, sub: SubRow, trigger: RunTrigger, o
   return { runId, jobId };
 }
 
+/** 設定を採用する：旧 active を superseded に、古い下書きを片付け、購読を active にして取得を投入 */
+export async function activateConfig(env: Env, cvId: string): Promise<{ ok: true; run?: { runId: string; jobId: string } | null } | null> {
+  const cv = await env.DB.prepare("SELECT id, subscription_id, state, version FROM config_versions WHERE id = ?").bind(cvId).first<{ id: string; subscription_id: string; state: string; version: number }>();
+  if (!cv) return null;
+  if (cv.state === "active") return { ok: true };
+  const s = await env.DB.prepare("SELECT * FROM subscriptions WHERE id = ?").bind(cv.subscription_id).first<SubRow>();
+  if (!s) return null;
+  const now = nowIso();
+  const status = s.status === "setup" ? "active" : s.status;
+  await env.DB.batch([
+    env.DB.prepare("UPDATE config_versions SET state = 'superseded' WHERE subscription_id = ? AND state = 'active'").bind(s.id),
+    env.DB.prepare("UPDATE config_versions SET state = 'active', activated_at = ? WHERE id = ?").bind(now, cv.id),
+    // 採用した設定より古い下書きは使われないので片付ける（破棄と同じ扱い）
+    env.DB.prepare("UPDATE config_versions SET state = 'rejected' WHERE subscription_id = ? AND state = 'draft' AND version < ?").bind(s.id, cv.version),
+    env.DB.prepare("UPDATE subscriptions SET active_config_version_id = ?, status = ?, next_run_at = ?, consecutive_extract_failures = 0, updated_at = ? WHERE id = ?").bind(
+      cv.id,
+      status,
+      status === "active" ? nextRunAt(s.schedule_minute_of_day, s.schedule_interval_minutes, s.timezone) : s.next_run_at,
+      now,
+      s.id,
+    ),
+    // 旧設定の未実行ジョブは取り消し、新設定で実行する
+    env.DB.prepare("UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE subscription_id = ? AND kind = 'crawl' AND status = 'queued'").bind(now, s.id),
+  ]);
+  const fresh = (await env.DB.prepare("SELECT * FROM subscriptions WHERE id = ?").bind(s.id).first<SubRow>())!;
+  const run = status === "active" ? await enqueueCrawl(env, fresh, "activation") : null;
+  return { ok: true, run };
+}
+
 export async function enqueueProbe(env: Env, sessionId: string | null, req: ProbeRequest): Promise<string> {
   const probeId = newId();
   const now = nowIso();
