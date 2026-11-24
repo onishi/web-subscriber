@@ -301,6 +301,7 @@ async function crawlHtml(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
       signatures.add(keySig);
 
       if (cfg.paging.mode === "none") return done("single_page");
+      if (limits.max_items && position >= limits.max_items) return done("max_items");
       if (seq + 1 >= limits.max_pages) return done("max_pages");
       if (actions >= limits.max_actions) return done("max_actions");
       if (Date.now() - started >= limits.max_duration_ms) return done("max_duration");

@@ -199,6 +199,21 @@ describe("html crawl", () => {
     expect(r.pages[1]).toMatchObject({ http_status: null, http_status_source: "none", action_result: "clicked" });
   });
 
+  it("合計件数の上限（max_items）でページングをやめる", async () => {
+    const r = await run(
+      cfg({
+        source: { url: `${base}/replace` },
+        wait: {
+          initial: { cond: { all: [{ exists: { css: "ul.news-list > li" } }, { stable: { target: { css: ".list-wrap" }, for_ms: 300 } }] }, timeout_ms: 5000 },
+          after_paging: { cond: { all: [{ items_changed: {} }, { exists: { css: "ul.news-list > li" } }, { stable: { target: { css: ".list-wrap" }, for_ms: 300 } }] }, timeout_ms: 5000 },
+        },
+        paging: { mode: "replace", next: { css: "button.next" }, limits: { max_pages: 20, max_actions: 30, max_duration_ms: 300000, max_items: 6 } },
+      }),
+    );
+    expect(r.outcome).toMatchObject({ traversal: "complete", end_reason: "max_items", actions_performed: 1 });
+    expect(r.items).toHaveLength(10); // 1ページ5件：5件では足りず2ページ目まで取り、10件で止める
+  });
+
   it("リンク遷移の replace と途中ページ失敗", async () => {
     const c = cfg({ source: { url: `${base}/paged` }, paging: { mode: "replace", next: { css: "a.next" } } });
     const ok = await run(c);

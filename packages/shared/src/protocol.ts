@@ -111,6 +111,7 @@ export type EndReason =
   | "next_disabled"
   | "cycle_detected"
   | "max_pages"
+  | "max_items"
   | "max_actions"
   | "max_duration"
   | "wait_timeout"

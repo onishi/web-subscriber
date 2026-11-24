@@ -76,6 +76,7 @@ export const END_LABEL: Record<string, string> = {
   next_disabled: "次へ無効",
   cycle_detected: "循環検知",
   max_pages: "上限（ページ）",
+  max_items: "上限（件数）",
   max_actions: "上限（操作）",
   max_duration: "上限（時間）",
   wait_timeout: "待機タイムアウト",

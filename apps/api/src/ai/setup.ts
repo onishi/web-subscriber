@@ -643,7 +643,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
     }
     if (prop.config.paging.mode !== "none") {
       const pages = main.pages.length;
-      if (!["no_next", "next_disabled"].includes(main.outcome.end_reason)) unverified.push(`最終ページまでは未到達（検証は${pages}ページで打ち切り）`);
+      if (!["no_next", "next_disabled", "max_items"].includes(main.outcome.end_reason)) unverified.push(`最終ページまでは未到達（検証は${pages}ページで打ち切り）`);
     }
     if (prop.config.extract && !prop.config.extract.items.empty_marker && !unverified.some((u) => u.includes("0件"))) unverified.push("0件時の表示は未観測（empty_marker 未設定。container が残れば正常0件として扱う）");
     if (detail) {

@@ -31,7 +31,7 @@ export const SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定エン�
 5. 単数指定（cardinality 省略="one"）で複数一致するとエラー。先頭を採る場合は cardinality:"first" を明示する。
 6. 日付は transforms に {"parse_date":{}} を付ける。変換に失敗すると必須でないフィールドでも item 全体が無効になるので、「2026.10.24 sat. - 01.17 sun.」のような範囲表記や曜日・改行入りの表記は日付に変換せず、テキストのまま period（任意名、collapse_whitespace 付き）で取る（開始日・終了日はセットのフィールドとして後から取り出される）。日付のみの表記に時刻を付けてはいけない（パーサが自動で日付精度を保つ）。必要なら formats（例 "yyyy.MM.dd"）を指定。
 7. identity は安定した方法を選ぶ：閲覧URLが一意なら "link"。URLがない/重複するなら "fields"（例: ["title","published_at"]）。
-8. ページングがあれば browser 方式で paging.mode を判定する：一覧が置き換わるなら "replace"、追加されるなら "append"。次へ要素は1つに一致するセレクタにする（複数一致なら pick を明示）。リンク遷移型の「次へ」も replace で扱える。
+8. ページングがあれば browser 方式で paging.mode を判定する：一覧が置き換わるなら "replace"、追加されるなら "append"。次へ要素は1つに一致するセレクタにする（複数一致なら pick を明示）。リンク遷移型の「次へ」も replace で扱える。お知らせ・ニュースのように過去分が大量にある一覧では、新着を追えれば十分なので limits.max_items（目安 100）で合計件数の上限を決める（1ページの件数が少ないサイトでも件数で止まるので max_pages より向く）。
 9. browser 方式では wait.initial に「一覧の準備完了」（container の存在、または empty_marker の存在の any）を設定し、item が1件以上あることを必須にしない。wait.after_paging には replace なら {"items_changed":{}}、append なら {"item_count_changed":{}} と stable を組み合わせる。固定秒数待機は存在しない。
 10. 検証は max_pages 2〜3 で行い、replace/append の判定と終了条件（次へが無くなる/無効になる）を可能な範囲で確認する。
 11. title は item の名前（記事名・催し名・展覧会名）。見出し要素（h2/h3/h4/strong/.title 等）から取り、「Read More」「詳しく見る」「一覧を見る」のような定型のリンク文字を title にしてはいけない。見出しとリンクが別要素なら、title は見出し、link は a[href]（ボタン的なリンクでもよい）から別々に取る。run_extraction の warnings は必ず解消する。
@@ -55,7 +55,7 @@ export const SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定エン�
   "identity": { "method": "source_id" | "fields" | "link" | "content_hash", "fields": [], "link_normalization": ["strip_fragment"] },
   "change_detection": { "fields": ["title","links","summary","content","authors","categories","published_at","updated_at"] },
   "wait": { "initial"?: Wait, "after_paging"?: Wait },
-  "paging": { "mode": "none" | "replace" | "append", "next"?: Selector, "pick": "only" | "first" | "last" | "index:N", "disabled_when": [{"attr":"disabled"},{"attr_equals":["aria-disabled","true"]},{"has_class":"..."}], "limits": { "max_pages": 20, "max_actions": 30, "max_duration_ms": 300000 } },
+  "paging": { "mode": "none" | "replace" | "append", "next"?: Selector, "pick": "only" | "first" | "last" | "index:N", "disabled_when": [{"attr":"disabled"},{"attr_equals":["aria-disabled","true"]},{"has_class":"..."}], "limits": { "max_pages": 20, "max_actions": 30, "max_duration_ms": 300000, "max_items"?: 100 } },
   "politeness": { "min_interval_ms": 1500, "respect_robots_txt": true },
   "timezone": "Asia/Tokyo"
 }

@@ -227,6 +227,8 @@ export const ConfigSchema = z
             max_pages: z.number().int().min(1).max(100).default(20),
             max_actions: z.number().int().min(0).max(200).default(30),
             max_duration_ms: z.number().int().min(5000).max(900000).default(300000),
+            /** 取得した item の合計がこの件数に達したらページングをやめる（省略時は無制限） */
+            max_items: z.number().int().min(1).max(5000).optional(),
           })
           .strict()
           .default({ max_pages: 20, max_actions: 30, max_duration_ms: 300000 }),
