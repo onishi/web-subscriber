@@ -183,7 +183,7 @@ export const ConfigSchema = z
       .object({ css: z.string(), xpath: z.literal("1.0") })
       .strict()
       .optional(),
-    feed: z.object({ format: z.enum(["auto", "rss2", "rss1", "atom"]).default("auto") }).strict().nullable().default(null),
+    feed: z.object({ format: z.enum(["auto", "rss2", "rss1", "atom", "x_profile"]).default("auto") }).strict().nullable().default(null),
     extract: z
       .object({
         channel: z.object({ fields: z.record(z.string(), FieldRuleSchema).default({}) }).strict().default({ fields: {} }),

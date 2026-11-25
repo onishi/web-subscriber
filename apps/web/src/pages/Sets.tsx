@@ -815,6 +815,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     periodEnd: opts.period?.end ?? "",
     facet: opts.facet ?? "",
     source_filter: !!opts.source_filter,
+    require_fields: !!opts.require_fields,
     layout: (opts.layout ?? "list") as string,
     calendar_key: (opts.calendar_key ?? "") as string,
     width: (opts.width ?? "normal") as string,
@@ -895,6 +896,7 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 period: hasPeriod ? { start: form.periodStart, end: form.periodEnd } : null,
                 facet: form.facet || null,
                 source_filter: form.source_filter,
+                require_fields: form.require_fields,
                 layout: form.layout,
                 calendar_key: form.calendar_key || undefined,
                 width: form.width,
@@ -979,6 +981,11 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
         <label className="row">
           <input type="checkbox" checked={form.source_filter} onChange={(e) => setForm({ ...form, source_filter: e.target.checked })} /> 情報源ごとのボタンを出す
           <span className="muted">（件数つき。押すとその情報源だけを表示します）</span>
+        </label>
+        <div>載せる条件</div>
+        <label className="row">
+          <input type="checkbox" checked={form.require_fields} onChange={(e) => setForm({ ...form, require_fields: e.target.checked })} /> カスタムフィールドが取れなかった情報は載せない
+          <span className="muted">（表示するカスタムフィールドのどれにも値がない情報を隠します。抽出が済むまで新しい情報も出ません）</span>
         </label>
         <div>レイアウト</div>
         <div className="layout-choices">

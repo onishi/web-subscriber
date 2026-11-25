@@ -19,6 +19,7 @@ import type { ListSnapshot, PageExtraction } from "@ws/shared/dom";
 import { openPage, ws, type OpenedPage } from "./browser.js";
 import { checkRobots, httpGet, FetchError, BlockedHostError } from "./net.js";
 import { parseFeed, looksLikeFeed } from "./feed.js";
+import { parseXProfile } from "./xprofile.js";
 import { settings } from "./settings.js";
 import { fetchOgImage, type ImageEnricher } from "./images.js";
 import type { DetailEnricher } from "./detail.js";
@@ -112,9 +113,9 @@ async function crawlFeed(cfg: SubscriptionConfig, sink: CrawlSink, base: Omit<Cr
   }
   let parsed;
   try {
-    parsed = parseFeed(res.body, res.url);
+    parsed = cfg.feed?.format === "x_profile" ? { ...parseXProfile(res.body, url), format_validation: [] } : parseFeed(res.body, res.url);
   } catch (e) {
-    const msg = (e as Error).message + (looksLikeFeed(res.headers["content-type"] ?? null, res.body) ? "" : " (not a feed)");
+    const msg = (e as Error).message + (cfg.feed?.format === "x_profile" || looksLikeFeed(res.headers["content-type"] ?? null, res.body) ? "" : " (not a feed)");
     await sink.page({ page: { ...pageBase, extract_status: "failed", error: msg }, channel: null, items: [] });
     return { ...base, pages_fetched: 1, traversal: "incomplete", end_reason: "error", extract_status: "failed", error_stage: "extract", error_detail: msg };
   }

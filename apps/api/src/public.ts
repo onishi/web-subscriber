@@ -32,6 +32,8 @@ export interface PublicOptions {
   facet?: string | null;
   /** 情報源（購読先）ごとの絞り込みボタンを出す */
   source_filter?: boolean;
+  /** 表示するカスタムフィールド（期間を含む）のどれにも値がない情報は載せない（未指定は載せる） */
+  require_fields?: boolean;
   layout?: PublicLayout;
   /** ページの幅：normal（860px）/ wide（1200px）/ full（画面いっぱい・最大 1600px） */
   width?: PublicWidth;
@@ -158,6 +160,7 @@ export function normalizePublicOptions(
     layout: LAYOUTS.includes(o.layout as PublicLayout) ? (o.layout as PublicLayout) : "list",
     width: WIDTHS.includes(o.width as PublicWidth) ? (o.width as PublicWidth) : "normal",
     source_filter: !!o.source_filter,
+    require_fields: !!o.require_fields,
     // 未指定なら期間の開始、なければ日付
     calendar_key:
       typeof o.calendar_key === "string" && (o.calendar_key === "published" || (o.calendar_key.startsWith("f:") && keys.get(o.calendar_key.slice(2))?.type === "date"))
@@ -786,6 +789,16 @@ function scopeSql(setId: string, opts: ReturnType<typeof normalizePublicOptions>
     if (!x) continue;
     where.push(x.sql);
     args.push(...x.args);
+  }
+  // カスタムフィールドが取れなかった情報を載せない：表示するフィールドのどれかに値があるものだけ
+  if (opts.require_fields) {
+    const ids = [...new Set([...opts.fields, ...(opts.period ? [opts.period.start, opts.period.end] : [])])].map((k) => byKey.get(k)?.id).filter((x): x is string => !!x);
+    if (ids.length) {
+      where.push(
+        `EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id IN (${ids.map(() => "?").join(",")}) AND (fv.value_date IS NOT NULL OR fv.value_num IS NOT NULL OR COALESCE(fv.value_text, '') != ''))`,
+      );
+      args.push(...ids);
+    }
   }
   // 区分：上から順に見て最初に当てはまった区分の番号（どれにも当てはまらなければ区分の数）
   let secSql = "";

@@ -40,6 +40,7 @@ const PUBLIC_OPTIONS_DOC = `options（公開ページの表示設定。指定し
 - filters: Filter[]（すべてのタブにかかる絞り込み）
 - facet: 絞り込みチップに使う list/text フィールドの key | null
 - source_filter: bool（情報源ごとの絞り込みボタン）
+- require_fields: bool（表示するカスタムフィールドのどれにも値がない情報は載せない。既定 false）
 - calendar_key: "published" | "f:<日付フィールドkey>"（calendar 表示でマスに置く日付）
 - excerpt_length: number, per_page: number
 Filter = { key: "published" | "image" | "excerpt" | "f:<key>", op, value? }

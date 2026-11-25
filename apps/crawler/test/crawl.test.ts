@@ -7,6 +7,7 @@ import { parseConfig, type SubscriptionConfig, type SubmittedItem } from "@ws/sh
 import { settings } from "../src/settings.js";
 import { crawl, type CrawlSink, type PageInfo } from "../src/crawl.js";
 import { parseFeed } from "../src/feed.js";
+import { parseXProfile } from "../src/xprofile.js";
 import { closeBrowser } from "../src/browser.js";
 import { ImageEnricher, parseOgImage, parsePageImage, TRIAL_LIMIT } from "../src/images.js";
 import { DetailEnricher } from "../src/detail.js";
@@ -146,6 +147,33 @@ describe("feed", () => {
     await crawl(c.config, sink);
     expect(logo).toEqual({ url: `${base}/img/news-1.jpg?a=1&b=2` });
     await setState({});
+  });
+});
+
+describe("x_profile", () => {
+  it("reads posts from the JSON embedded in the profile page", () => {
+    const user = { __typename: "User", core: { name: "店", screen_name: "shop" }, avatar: { image_url: "https://pbs.twimg.com/a_normal.jpg" }, profile_bio: { description: "bio" } };
+    const tw = (id: string, ms: number, text: string, author = user) => ({
+      __typename: "Tweet",
+      rest_id: id,
+      core: { user_results: { result: author } },
+      details: { created_at_ms: ms, full_text: text, display_text_range: [0, [...text].length] },
+      url_entities: [{ url: "https://t.co/abc", expanded_url: "https://example.com/x" }],
+      media_entities2: [{ media_url_https: "https://pbs.twimg.com/media/p.jpg" }],
+    });
+    const payload = { data: { user_result_by_screen_name: { result: { ...user, timeline: [tw("1", 1700000000000, "古い投稿\n本文 https://t.co/abc"), tw("2", 1800000000000, "\n新しい投稿"), tw("3", 1750000000000, "他人", { ...user, core: { name: "x", screen_name: "other" } })] } } } };
+    const html = `<html><script>($R=>$R[1]={key:${JSON.stringify(JSON.stringify(payload))}})</script></html>`;
+    const r = parseXProfile(html, "https://x.com/shop");
+    expect(r.channel.title?.value).toBe("店");
+    expect(r.channel.logo?.url).toBe("https://pbs.twimg.com/a_400x400.jpg");
+    expect(r.items.map((i) => i.source_id)).toEqual(["2", "1"]);
+    expect(r.items[0].title?.value).toBe("新しい投稿");
+    expect(r.items[1].content).toMatchObject({ value: "古い投稿\n本文 https://example.com/x" });
+    expect(r.items[1].links).toEqual([
+      { href: "https://x.com/shop/status/1", rel: "alternate", media_type: "text/html" },
+      { href: "https://pbs.twimg.com/media/p.jpg", rel: "enclosure", media_type: "image/jpeg" },
+    ]);
+    expect(() => parseXProfile("<html></html>", "https://x.com/shop")).toThrow(/x_profile/);
   });
 });
 
