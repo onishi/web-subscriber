@@ -344,16 +344,19 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       // リンク先の og:image がどのページも同じ（サイト共通の画像）なら、本文の代表画像を取るルールを作る
       const outline =
         sample.length >= 2 && env.GEMINI_API_KEY && (p.kind === "detail" || !prop.config.detail)
-          ? ((await this.probe(step, sid, "detail-outline", { kind: "outline", urls: sample.slice(0, 3), method: "http" })) as { pages?: { meta?: { og_image?: string | null } }[] })
+          ? ((await this.probe(step, sid, "detail-outline", { kind: "outline", urls: [...sample.slice(0, 3), listCfg.source.url], method: "http" })) as { pages?: { url?: string; meta?: { og_image?: string | null } }[] })
           : null;
-      const ogs = (outline?.pages ?? []).map((x) => x.meta?.og_image ?? null);
-      const genericOg = (ogs.length >= 2 && !!ogs[0] && ogs.every((x) => x === ogs[0]) ? ogs[0] : null) ?? known?.img ?? null;
+      // サンプルの詳細ページの og:image がどれも同じ、または一覧ページ（サイトの既定）と同じなら、サイト共通の画像
+      const listOg = outline?.pages?.find((x) => x.url === listCfg.source.url)?.meta?.og_image ?? null;
+      const ogs = (outline?.pages ?? []).filter((x) => x.url !== listCfg.source.url).map((x) => x.meta?.og_image ?? null);
+      const genericOg =
+        (ogs.length >= 2 && !!ogs[0] && ogs.every((x) => x === ogs[0]) ? ogs[0] : null) ?? (listOg && ogs.some((x) => x === listOg) ? listOg : null) ?? known?.img ?? null;
       const wantDetail = p.kind === "detail" || (!prop.config.detail && !!env.GEMINI_API_KEY && okMain && (noContent || !!genericOg));
       if (wantDetail && sample.length > 0) {
         const why = [noContent ? "一覧に本文がない" : null, genericOg ? "リンク先の og:image がどのページも同じ" : null].filter(Boolean).join("・") || "詳細ページの取得ルールを作る";
         await sdo(step, "detail-start", async () => addProgress(env, sid, "detail", "running", `${why}ため、リンク先 ${sample.length} ページを比較して取得ルールを作成`));
         try {
-          const dp = await this.detailAiLoop(step, p, listCfg, sample, (main as ValResult).items.slice(0, 5), { outline, genericOg, needContent: noContent || p.kind === "detail" });
+          const dp = await this.detailAiLoop(step, p, listCfg, sample, (main as ValResult).items.slice(0, 5), { outline: outline && { ...outline, pages: (outline.pages ?? []).filter((x) => x.url !== listCfg.source.url) }, genericOg, needContent: noContent || p.kind === "detail" });
           // 一覧で本文が取れている購読で「本文のない item のみ」にすると、詳細ページを一度も取りに行かない
           if (dp.detail.when === "missing_content" && !lacksContent(main as ValResult)) dp.detail = { ...dp.detail, when: "always" };
           prop = { ...prop, config: { ...prop.config, detail: dp.detail }, unverified: [...prop.unverified, ...dp.unverified], rationale: `${prop.rationale}\n\n詳細ページ: ${dp.rationale}` };

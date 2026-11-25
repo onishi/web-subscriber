@@ -36,6 +36,7 @@ export const SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定エン�
 10. 検証は max_pages 2〜3 で行い、replace/append の判定と終了条件（次へが無くなる/無効になる）を可能な範囲で確認する。
 11. title は item の名前（記事名・催し名・展覧会名）。見出し要素（h2/h3/h4/strong/.title 等）から取り、「Read More」「詳しく見る」「一覧を見る」のような定型のリンク文字を title にしてはいけない。見出しとリンクが別要素なら、title は見出し、link は a[href]（ボタン的なリンクでもよい）から別々に取る。run_extraction の warnings は必ず解消する。
 12. item は同じ種類のもの（記事・催し・展覧会など）の繰り返しにする。トップページのように「開催中の展覧会」「お知らせ」「ショップ」「アクセス」など種類の違うブロックが並ぶページで、ブロックそのものを item にしてはいけない。登録URLがそうしたページなら、ナビゲーションやブロック内の「一覧を見る」等のリンクから同じサイトの専用一覧ページ（展覧会一覧・ニュース一覧など、登録者が追いたいもの）を inspect で探し、source.url をそのページに変えてよい。どれを選んだかは rationale に書く。
+13. 一覧の item にサムネイル画像（展覧会のメインビジュアル・記事の写真など、item ごとに違う画像）があれば、image フィールドで取る：{"from":{"css":"<item 内の img>"},"take":{"attr":"src"}（遅延読み込みなら data-src 等）,"cardinality":"first","transforms":[{"resolve_url":{}},{"regex_extract":{"pattern":"^(?!.*(no-?image|noimage|default\\.|dummy|placeholder|now-?printing))(https?://.+)$","group":2}}]}。regex_extract は「画像未定」のダミー画像を除くためのもので、一致しなければ値なし（エラーにならない）。ロゴ・アイコン・どの item でも同じ画像は取らない。
 
 # 設定 DSL（schema_version 1）
 {
@@ -137,7 +138,7 @@ export const DETAIL_SYSTEM_PROMPT = `あなたは Web Subscriber の購読設定
 4. 本文要素が見つからない、またはページごとに揺れる場合は fallback にメタ情報を使う：{"from":{"css":"meta[name='description']"},"take":{"attr":"content"}}、{"from":{"css":"meta[property='og:description']"},"take":{"attr":"content"}}。
 5. 会期・開催日・公開日などの日付が詳細ページにあれば published_at に parse_date 付きで取る（一覧で取れていれば不要）。会期の範囲表記は regex_extract で開始日を取り出す。
    会期・開催期間・開催日時の表記があれば、それとは別に範囲表記そのままのテキストを period（任意名）でも取る（collapse_whitespace 付き。終了日を後で使うため）。一覧で本文が取れていても、会期が一覧に無ければ取る。
-6. 画像は image フィールドに {"take":{"attr":"content"}} で og:image、または本文中の代表画像の src を resolve_url 付きで取ってよい。
+6. 画像は image フィールドに、本文中の代表画像（その item の写真・ポスター・メインビジュアル）の src を resolve_url 付きで取る。og:image（{"from":{"css":"meta[property='og:image']"},"take":{"attr":"content"}}）はページごとに違う画像であることを確かめた場合だけ使う（サイト共通の画像のことが多い）。「画像未定」のダミー画像（noimage・default など）は regex_extract で除く。
 7. 一覧で取れているフィールド（title・link 等）は、詳細ページの方が明らかに良い場合を除き指定しない。title を指定すると一覧のタイトルを上書きする。
 8. fetch.method は http（JS非実行）で本文が取れるなら "http"。JS実行後にしか本文が出ない場合のみ "browser" とし、wait に本文要素の exists を指定する。
 9. when は通常 "always"。一覧で概要が取れる item もあり、取れない item だけ補えばよい場合は "missing_content"。

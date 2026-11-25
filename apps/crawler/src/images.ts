@@ -33,14 +33,48 @@ export function parseOgImage(html: string, baseUrl: string): string | null {
   }
 }
 
-/** 本文の画像（特徴画像）の候補：main / article の中（なければ header・nav・footer を除いた本文）で、ロゴ・アイコン・小さい画像を除いた最初の画像 */
+const SKIP_IMG = /\.svg(\?|$)|\/themes?\/.*\/(common|index|top|parts|ui)\/|logo|icon|sprite|banner|btn|button|arrow|spacer|blank|loading|avatar|sns|share|twitter|facebook|instagram|line_|ロゴ|アイコン/;
+/** 画像が用意されていないときのダミー画像 */
+const PLACEHOLDER_IMG = /no[-_]?image|now[-_]?printing|default\.(jpe?g|png|gif|webp)|dummy|placeholder|coming[-_]?soon|noimg/;
+/** メイン画像らしい名前（クラス・ファイル名） */
+const MAIN_HINT = /wp-post-image|eyecatch|eye-catch|featured|main|kv|key-?visual|hero|mv\b|poster|flyer|chirashi|チラシ|ポスター|thumbnail|thumb|visual|top-?img|img-?top/;
+
+/**
+ * 本文の画像（特徴画像）の候補。main / article の中（なければ header・nav・footer を除いた本文）から、
+ * ロゴ・アイコン・ダミー・小さい画像を除き、メイン画像らしい名前・大きさの画像を優先して選ぶ（同点なら先に出てくるもの）。
+ * fragment（リンクの #以降）があれば、その id の要素以降を優先する（1ページに複数の item がまとまっているページ向け）
+ */
 export function parsePageImage(html: string, baseUrl: string, exclude: Set<string> = new Set()): string | null {
   const body = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(script|style|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
+  let fragment = "";
+  try {
+    fragment = decodeURIComponent(new URL(baseUrl).hash.slice(1));
+  } catch {
+    /* ignore */
+  }
+  if (fragment) {
+    const at = body.search(new RegExp(`\\s(id|name)=["']${fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']`));
+    if (at >= 0) {
+      // その区画の画像だけを見る（次の同種の区画の手前まで。見つからなければ 30KB まで）
+      const tail = body.slice(at);
+      // 次の同種の区画：fragment の先頭の文字部分（例 "Theme6570-22" → "Theme"）で始まる id
+      const prefix = /^[^\d]{2,}/.exec(fragment)?.[0];
+      const next = prefix ? tail.slice(1).search(new RegExp(`\\s(id|name)=["']${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)) : -1;
+      const r = pick(tail.slice(0, next > 0 ? next + 1 : 30000), baseUrl, exclude);
+      return r; // 区画が分かっているのに画像がなければ、ほかの区画の画像は使わない
+    }
+  }
   const scope = (
     /<article\b[\s\S]*?<\/article\s*>/i.exec(body)?.[0] ??
     /<main\b[\s\S]*?<\/main\s*>/i.exec(body)?.[0] ??
     body.replace(/^[\s\S]*?<body\b[^>]*>/i, "")
   ).replace(/<(header|nav|footer|aside)\b[\s\S]*?<\/\1\s*>/gi, "");
+  return pick(scope, baseUrl, exclude);
+}
+
+function pick(scope: string, baseUrl: string, exclude: Set<string>): string | null {
+  let best: { url: string; score: number } | null = null;
+  let order = 0;
   for (const m of scope.matchAll(/<img\b[^>]*>/gi)) {
     const attrs: Record<string, string> = {};
     for (const a of m[0].matchAll(/([a-zA-Z:_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) attrs[a[1].toLowerCase()] = a[2] ?? a[3] ?? a[4] ?? "";
@@ -49,15 +83,22 @@ export function parsePageImage(html: string, baseUrl: string, exclude: Set<strin
     const w = Number(attrs.width), h = Number(attrs.height);
     if ((w && w < 200) || (h && h < 120)) continue;
     const hint = `${src} ${attrs.class ?? ""} ${attrs.id ?? ""} ${attrs.alt ?? ""}`.toLowerCase();
-    if (/\.svg(\?|$)|\/themes?\/.*\/(common|index|top|parts|ui)\/|logo|icon|sprite|banner|btn|button|arrow|spacer|blank|loading|avatar|sns|share|twitter|facebook|instagram|line_|ロゴ|アイコン/.test(hint)) continue;
+    if (SKIP_IMG.test(hint) || PLACEHOLDER_IMG.test(hint)) continue;
+    let url: string;
     try {
       const u = new URL(decodeEntities(src.trim()), baseUrl);
-      if ((u.protocol === "http:" || u.protocol === "https:") && !exclude.has(u.toString())) return u.toString();
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      url = u.toString();
     } catch {
-      /* 次の候補 */
+      continue;
     }
+    if (exclude.has(url)) continue;
+    // 先に出てくるほど良い（本文の最初の画像はたいていメイン）。名前・大きさで加点
+    const score = -order++ + (MAIN_HINT.test(hint) ? 3 : 0) + (w >= 400 || h >= 300 ? 2 : 0) + (/-\d{2,4}x\d{2,4}\./.test(src) ? -1 : 0);
+    if (!best || score > best.score) best = { url, score };
+    if (order >= 12) break;
   }
-  return null;
+  return best?.url ?? null;
 }
 
 function decodeEntities(s: string): string {

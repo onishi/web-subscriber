@@ -354,6 +354,12 @@ describe("item images (og:image)", () => {
     // テーマ内でも展覧会ごとの画像は拾い、共通素材（common / index など）は拾わない
     const t = `<main><img src="/wp-content/themes/x/img/common/deco.jpg"><img src="/wp-content/themes/x/img/index/fish.png"><img data-src="/wp-content/themes/x/img/exhibition/2610/main.jpg"></main>`;
     expect(parsePageImage(t, "https://ex.com/")).toBe("https://ex.com/wp-content/themes/x/img/exhibition/2610/main.jpg");
+    // ダミー画像は飛ばし、メイン画像らしい名前を優先する
+    expect(parsePageImage(`<main><img src="/noimage.webp"><img src="/a/photo1.jpg"><img src="/a/kv_main.jpg" width="800"></main>`, "https://ex.com/")).toBe("https://ex.com/a/kv_main.jpg");
+    // #以降があれば、その区画の画像だけを見る
+    const sec = `<main><div id="Theme1-22"><h2>A</h2><img src="/a.jpg"></div><div id="Theme2-22"><h2>B</h2><img src="/b.jpg"></div><div id="Theme3-22"><h2>C</h2></div></main>`;
+    expect(parsePageImage(sec, "https://ex.com/p/?d=1#Theme2-22")).toBe("https://ex.com/b.jpg");
+    expect(parsePageImage(sec, "https://ex.com/p/?d=1#Theme3-22")).toBeNull();
   });
 
   it("uses the body image when og:image is the same on every page", async () => {
