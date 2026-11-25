@@ -617,6 +617,16 @@ const LAYOUT_CHOICES: [string, string, string][] = [
 type FilterOp = "not_empty" | "empty" | "future" | "past" | "until_today" | "next_days" | "last_days" | "eq" | "ne" | "gte" | "lte" | "true" | "false";
 type FilterKind = "date" | "text" | "list" | "number" | "boolean" | "plain";
 type Filter = { key: string; op: FilterOp; value?: string | number };
+/** 公開ページの色調（API の THEMES と同じキー）：[キー, 名前, 背景, アクセント, 淡いアクセント] */
+const THEME_CHOICES: [string, string, string, string, string][] = [
+  ["warm", "テラコッタ", "#faf8f4", "#8a3b1e", "#f3e7df"],
+  ["ink", "モノクロ", "#f7f7f5", "#1a1a1a", "#ececea"],
+  ["indigo", "藍", "#f5f7fb", "#2f4a9e", "#e4eaf8"],
+  ["forest", "森", "#f5f8f3", "#2f6b3a", "#e2efe2"],
+  ["ocean", "海", "#f3f8f9", "#0f6f86", "#dff0f4"],
+  ["sakura", "桜", "#fcf7f8", "#b0466a", "#f8e4ea"],
+];
+
 type Section = { id: string; label: string; conditions: Filter[]; tab: boolean; badge: boolean; hidden: boolean };
 type Sort = { key: string; dir: string };
 /** 値を入力する条件 */
@@ -821,10 +831,11 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
     periodEnd: opts.period?.end ?? "",
     facet: opts.facet ?? "",
     source_filter: !!opts.source_filter,
-    require_fields: !!opts.require_fields,
     layout: (opts.layout ?? "list") as string,
     calendar_key: (opts.calendar_key ?? "") as string,
     width: (opts.width ?? "normal") as string,
+    theme: (opts.theme ?? "warm") as string,
+    color_mode: (opts.color_mode ?? "auto") as string,
     excerpt_length: (opts.excerpt_length ?? 140) as number,
     per_page: (opts.per_page ?? 30) as number,
     sort: { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" }, ...(opts.sort ?? {}) } as Record<string, Sort>,
@@ -902,10 +913,11 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
                 period: hasPeriod ? { start: form.periodStart, end: form.periodEnd } : null,
                 facet: form.facet || null,
                 source_filter: form.source_filter,
-                require_fields: form.require_fields,
                 layout: form.layout,
                 calendar_key: form.calendar_key || undefined,
                 width: form.width,
+                theme: form.theme,
+                color_mode: form.color_mode,
                 show: { image: form.image },
                 excerpt_length: form.excerpt_length,
                 per_page: form.per_page,
@@ -988,11 +1000,6 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
           <input type="checkbox" checked={form.source_filter} onChange={(e) => setForm({ ...form, source_filter: e.target.checked })} /> 情報源ごとのボタンを出す
           <span className="muted">（件数つき。押すとその情報源だけを表示します）</span>
         </label>
-        <div>載せる条件</div>
-        <label className="row">
-          <input type="checkbox" checked={form.require_fields} onChange={(e) => setForm({ ...form, require_fields: e.target.checked })} /> カスタムフィールドが取れなかった情報は載せない
-          <span className="muted">（表示するカスタムフィールドのどれにも値がない情報を隠します。抽出が済むまで新しい情報も出ません）</span>
-        </label>
         <div>レイアウト</div>
         <div className="layout-choices">
           {LAYOUT_CHOICES.map(([k, label, desc]) => (
@@ -1007,6 +1014,27 @@ function PublishEditor({ set, fields, reload }: { set: any; fields: FieldDef[]; 
               <span className="muted">{desc}</span>
             </label>
           ))}
+        </div>
+        <div>色調</div>
+        <div className="theme-choices">
+          {THEME_CHOICES.map(([k, label, bg, accent, weak]) => (
+            <label key={k} className={`theme-choice${form.theme === k ? " on" : ""}`}>
+              <input type="radio" name="theme" checked={form.theme === k} onChange={() => setForm({ ...form, theme: k })} />
+              <span className="theme-swatch" style={{ background: bg }} aria-hidden="true">
+                <i style={{ background: accent }} />
+                <i style={{ background: weak }} />
+              </span>
+              {label}
+            </label>
+          ))}
+        </div>
+        <div>明暗</div>
+        <div className="row">
+          <select value={form.color_mode} onChange={(e) => setForm({ ...form, color_mode: e.target.value })}>
+            <option value="auto">端末の設定に合わせる</option>
+            <option value="light">いつも明るい配色</option>
+            <option value="dark">いつも暗い配色</option>
+          </select>
         </div>
         <div>ページの幅</div>
         <div className="row">

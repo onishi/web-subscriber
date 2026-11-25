@@ -145,6 +145,12 @@ button.link:hover { text-decoration: underline; }
 .layout-choice { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .layout-choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .layout-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.theme-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.theme-choice { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 13px; }
+.theme-choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.theme-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.theme-swatch { display: inline-flex; gap: 3px; padding: 4px; border-radius: 6px; border: 1px solid rgba(0, 0, 0, .08); }
+.theme-swatch i { width: 12px; height: 16px; border-radius: 3px; }
 .layout-thumb { display: grid; gap: 3px; height: 44px; padding: 4px; border-radius: 4px; background: var(--line); }
 .layout-thumb i { display: block; background: var(--panel); border-radius: 2px; }
 .layout-list { grid-template-rows: repeat(3, 1fr); }

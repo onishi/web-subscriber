@@ -32,11 +32,13 @@ export interface PublicOptions {
   facet?: string | null;
   /** 情報源（購読先）ごとの絞り込みボタンを出す */
   source_filter?: boolean;
-  /** 表示するカスタムフィールド（期間を含む）のどれにも値がない情報は載せない（未指定は載せる） */
-  require_fields?: boolean;
   layout?: PublicLayout;
   /** ページの幅：normal（860px）/ wide（1200px）/ full（画面いっぱい・最大 1600px） */
   width?: PublicWidth;
+  /** 色調（THEMES のキー） */
+  theme?: PublicTheme;
+  /** 明暗：auto（端末の設定に合わせる）/ light / dark */
+  color_mode?: ColorMode;
   /** カレンダー表示でマスに置く日付：published（日付）または f:<日付フィールドのキー> */
   calendar_key?: string;
   /**
@@ -82,6 +84,28 @@ const SECTION_ID_RE = /^[a-z0-9_-]{1,24}$/;
 
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export type PublicWidth = "normal" | "wide" | "full";
+export type ColorMode = "auto" | "light" | "dark";
+type Palette = { bg: string; panel: string; text: string; muted: string; line: string; accent: string; "accent-weak": string };
+/** 公開ページの色調：明るい配色と暗い配色の組 */
+export const THEMES = {
+  warm: { label: "テラコッタ", light: { bg: "#faf8f4", panel: "#ffffff", text: "#1d1b18", muted: "#6e6a62", line: "#e6e1d7", accent: "#8a3b1e", "accent-weak": "#f3e7df" }, dark: { bg: "#161513", panel: "#1f1d1a", text: "#eeeae2", muted: "#a39d92", line: "#34312c", accent: "#e3a27f", "accent-weak": "#3a2a22" } },
+  ink: { label: "モノクロ", light: { bg: "#f7f7f5", panel: "#ffffff", text: "#1a1a1a", muted: "#6b6b6b", line: "#e2e2df", accent: "#1a1a1a", "accent-weak": "#ececea" }, dark: { bg: "#121212", panel: "#1c1c1c", text: "#ededed", muted: "#9a9a9a", line: "#2e2e2e", accent: "#f0f0f0", "accent-weak": "#2a2a2a" } },
+  indigo: { label: "藍", light: { bg: "#f5f7fb", panel: "#ffffff", text: "#172033", muted: "#5f6b80", line: "#dde3ee", accent: "#2f4a9e", "accent-weak": "#e4eaf8" }, dark: { bg: "#0f1420", panel: "#171d2b", text: "#e6ebf5", muted: "#9aa5ba", line: "#2a3346", accent: "#9db4f5", "accent-weak": "#22305a" } },
+  forest: { label: "森", light: { bg: "#f5f8f3", panel: "#ffffff", text: "#18221a", muted: "#5f6f60", line: "#dde6da", accent: "#2f6b3a", "accent-weak": "#e2efe2" }, dark: { bg: "#101611", panel: "#182019", text: "#e6eee5", muted: "#9bab9b", line: "#2b372c", accent: "#8fd19a", "accent-weak": "#1f3523" } },
+  ocean: { label: "海", light: { bg: "#f3f8f9", panel: "#ffffff", text: "#13232a", muted: "#5a6f77", line: "#d9e6ea", accent: "#0f6f86", "accent-weak": "#dff0f4" }, dark: { bg: "#0e1619", panel: "#152024", text: "#e3eef1", muted: "#93a9b0", line: "#263538", accent: "#7fd0e2", "accent-weak": "#183740" } },
+  sakura: { label: "桜", light: { bg: "#fcf7f8", panel: "#ffffff", text: "#2a1c20", muted: "#7a6469", line: "#f0dfe3", accent: "#b0466a", "accent-weak": "#f8e4ea" }, dark: { bg: "#1a1215", panel: "#23191c", text: "#f2e6e9", muted: "#b39aa1", line: "#3a2a2f", accent: "#f29bb8", "accent-weak": "#43242f" } },
+} satisfies Record<string, { label: string; light: Palette; dark: Palette }>;
+export type PublicTheme = keyof typeof THEMES;
+const COLOR_MODES: ColorMode[] = ["auto", "light", "dark"];
+
+/** 色調・明暗から :root の色の定義を作る */
+function themeCss(theme: PublicTheme = "warm", mode: ColorMode = "auto"): string {
+  const t = THEMES[theme] ?? THEMES.warm;
+  const vars = (p: Palette, scheme: string) => `:root { ${Object.entries(p).map(([k, v]) => `--${k}: ${v};`).join(" ")} color-scheme: ${scheme}; }`;
+  if (mode === "light") return vars(t.light, "light");
+  if (mode === "dark") return vars(t.dark, "dark");
+  return `${vars(t.light, "light")}\n@media (prefers-color-scheme: dark) { ${vars(t.dark, "dark")} }`;
+}
 const WIDTHS: PublicWidth[] = ["normal", "wide", "full"];
 export const LAYOUTS: PublicLayout[] = ["list", "cards", "compact", "table", "calendar"];
 const DEFAULT_SORT: Record<string, PublicSort> = { now: { key: "period_end", dir: "asc" }, upcoming: { key: "period_start", dir: "asc" }, all: { key: "published", dir: "desc" } };
@@ -159,8 +183,9 @@ export function normalizePublicOptions(
     facet: o.facet && ["list", "text"].includes(keys.get(o.facet)?.type ?? "") ? o.facet : null,
     layout: LAYOUTS.includes(o.layout as PublicLayout) ? (o.layout as PublicLayout) : "list",
     width: WIDTHS.includes(o.width as PublicWidth) ? (o.width as PublicWidth) : "normal",
+    theme: (typeof o.theme === "string" && o.theme in THEMES ? o.theme : "warm") as PublicTheme,
+    color_mode: COLOR_MODES.includes(o.color_mode as ColorMode) ? (o.color_mode as ColorMode) : "auto",
     source_filter: !!o.source_filter,
-    require_fields: !!o.require_fields,
     // 未指定なら期間の開始、なければ日付
     calendar_key:
       typeof o.calendar_key === "string" && (o.calendar_key === "published" || (o.calendar_key.startsWith("f:") && keys.get(o.calendar_key.slice(2))?.type === "date"))
@@ -767,6 +792,7 @@ publicPages.get("/:slug", async (c) => {
         </main>
       `,
       feedHref,
+      { theme: opts.theme, mode: opts.color_mode },
     ),
   );
 });
@@ -789,16 +815,6 @@ function scopeSql(setId: string, opts: ReturnType<typeof normalizePublicOptions>
     if (!x) continue;
     where.push(x.sql);
     args.push(...x.args);
-  }
-  // カスタムフィールドが取れなかった情報を載せない：表示するフィールドのどれかに値があるものだけ
-  if (opts.require_fields) {
-    const ids = [...new Set([...opts.fields, ...(opts.period ? [opts.period.start, opts.period.end] : [])])].map((k) => byKey.get(k)?.id).filter((x): x is string => !!x);
-    if (ids.length) {
-      where.push(
-        `EXISTS (SELECT 1 FROM item_field_values fv WHERE fv.item_id = i.id AND fv.field_id IN (${ids.map(() => "?").join(",")}) AND (fv.value_date IS NOT NULL OR fv.value_num IS NOT NULL OR COALESCE(fv.value_text, '') != ''))`,
-      );
-      args.push(...ids);
-    }
   }
   // 区分：上から順に見て最初に当てはまった区分の番号（どれにも当てはまらなければ区分の数）
   let secSql = "";
@@ -909,7 +925,7 @@ export function notFound(): H {
   return layout("ページが見つかりません", "", html`<main class="wrap"><p class="empty">このページは公開されていないか、存在しません。</p></main>`);
 }
 
-function layout(title: string, description: string, body: H, feedUrl?: string): H {
+function layout(title: string, description: string, body: H, feedUrl?: string, theme?: { theme: PublicTheme; mode: ColorMode }): H {
   return html`<!doctype html>
     <html lang="ja">
       <head>
@@ -921,7 +937,9 @@ function layout(title: string, description: string, body: H, feedUrl?: string): 
         ${description ? html`<meta property="og:description" content="${description}" />` : ""}
         <meta property="og:type" content="website" />
         ${feedUrl ? html`<link rel="alternate" type="application/atom+xml" title="${title}" href="${feedUrl}" />` : ""}
+        <meta name="theme-color" content="${THEMES[theme?.theme ?? "warm"][theme?.mode === "dark" ? "dark" : "light"].bg}" />
         <style>
+          ${raw(themeCss(theme?.theme, theme?.mode))}
           ${raw(CSS)}
         </style>
       </head>
@@ -987,8 +1005,6 @@ const KEYS_JS = `(() => {
 })();`;
 
 const CSS = `
-:root { --bg: #faf8f4; --panel: #ffffff; --text: #1d1b18; --muted: #6e6a62; --line: #e6e1d7; --accent: #8a3b1e; --accent-weak: #f3e7df; color-scheme: light; }
-@media (prefers-color-scheme: dark) { :root { --bg: #161513; --panel: #1f1d1a; --text: #eeeae2; --muted: #a39d92; --line: #34312c; --accent: #e3a27f; --accent-weak: #3a2a22; color-scheme: dark; } }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.7 "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
 a { color: inherit; }
