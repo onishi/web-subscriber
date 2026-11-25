@@ -320,7 +320,24 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
 
       // 4) 詳細ページ：一覧に本文がなければ、リンク先から取るルールを AI が作る
       const main = v1[listCfg.fetch.method];
-      const sample = main && !("error" in main) ? sampleDetailUrls(main, listCfg.source.url) : [];
+      let sample = main && !("error" in main) ? sampleDetailUrls(main, listCfg.source.url) : [];
+      // 既存の購読：取り込み済みの item の多くに同じ画像が付いていれば、サイト共通の画像とみなす。
+      // その画像が付いた item のページを先頭のサンプルにして、AI が実物を比べられるようにする
+      const known =
+        p.kind !== "setup"
+          ? await sdo(step, "known-generic-image", async () => {
+              const IMG = "COALESCE(json_extract(detail_json, '$.native.extracted_fields.image'), image_url)";
+              const g = await env.DB.prepare(`SELECT ${IMG} AS img, COUNT(*) AS n FROM items WHERE subscription_id = ? AND ${IMG} IS NOT NULL GROUP BY 1 HAVING n >= 3 ORDER BY n DESC LIMIT 1`)
+                .bind(p.subscriptionId)
+                .first<{ img: string; n: number }>();
+              if (!g) return null;
+              const rs = await env.DB.prepare(`SELECT primary_link FROM items WHERE subscription_id = ? AND ${IMG} = ? AND primary_link IS NOT NULL ORDER BY first_seen_at DESC LIMIT 2`)
+                .bind(p.subscriptionId, g.img)
+                .all<{ primary_link: string }>();
+              return { img: g.img, n: g.n, links: rs.results.map((r) => r.primary_link).filter((u) => sameSite(u, listCfg.source.url)) };
+            })
+          : null;
+      if (known?.links.length) sample = [...new Set([...known.links, ...sample])].slice(0, 6);
       let detailCheck: DetailValidation | null = null;
       const okMain = !!main && !("error" in main);
       const noContent = okMain && lacksContent(main as ValResult);
@@ -330,7 +347,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
           ? ((await this.probe(step, sid, "detail-outline", { kind: "outline", urls: sample.slice(0, 3), method: "http" })) as { pages?: { meta?: { og_image?: string | null } }[] })
           : null;
       const ogs = (outline?.pages ?? []).map((x) => x.meta?.og_image ?? null);
-      const genericOg = ogs.length >= 2 && !!ogs[0] && ogs.every((x) => x === ogs[0]) ? ogs[0] : null;
+      const genericOg = (ogs.length >= 2 && !!ogs[0] && ogs.every((x) => x === ogs[0]) ? ogs[0] : null) ?? known?.img ?? null;
       const wantDetail = p.kind === "detail" || (!prop.config.detail && !!env.GEMINI_API_KEY && okMain && (noContent || !!genericOg));
       if (wantDetail && sample.length > 0) {
         const why = [noContent ? "一覧に本文がない" : null, genericOg ? "リンク先の og:image がどのページも同じ" : null].filter(Boolean).join("・") || "詳細ページの取得ルールを作る";
