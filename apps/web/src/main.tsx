@@ -39,6 +39,7 @@ function App() {
           <Route path="/configs/:id" element={<ConfigPage />} />
           <Route path="/sets" element={<SetsPage />} />
           <Route path="/sets/:id" element={<SetPage />} />
+          <Route path="/sets/:id/:tab" element={<SetPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>

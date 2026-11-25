@@ -132,15 +132,21 @@ export function SetsPage() {
   );
 }
 
+/** セットのタブと URL（/sets/:id/<パス>）。item は /sets/:id */
+const SET_TABS = { items: "", members: "sources", fields: "fields", publish: "public" } as const;
+type SetTab = keyof typeof SET_TABS;
+
 export function SetPage() {
-  const { id } = useParams();
+  const { id, tab: tabPath } = useParams();
   const nav = useNavigate();
   const { data, error, reload } = useApi<any>(`/sets/${id}`);
   const subs = useApi<{ subscriptions: any[] }>("/subscriptions");
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"items" | "members" | "fields" | "publish">("items");
+  const tab = ((Object.keys(SET_TABS) as SetTab[]).find((k) => SET_TABS[k] === (tabPath ?? "")) ?? "items") as SetTab;
+  const tabHref = (t: SetTab) => `/sets/${id}${SET_TABS[t] ? `/${SET_TABS[t]}` : ""}`;
+  const setTab = (t: SetTab) => nav(tabHref(t));
   const [params, setParams] = useState<Record<string, string>>({});
   if (error) return <p className="error">{error === "not_found" ? "セットが見つかりません" : error}</p>;
   if (!data) return <p className="muted">読み込み中…</p>;
@@ -216,18 +222,18 @@ export function SetPage() {
         ))}
       </div>
       <div className="tabs">
-        <button className={tab === "items" ? "on" : ""} onClick={() => setTab("items")}>
+        <Link to={tabHref("items")} className={`tab-link${tab === "items" ? " on" : ""}`}>
           item
-        </button>
-        <button className={tab === "members" ? "on" : ""} onClick={() => setTab("members")}>
+        </Link>
+        <Link to={tabHref("members")} className={`tab-link${tab === "members" ? " on" : ""}`}>
           購読先（{data.members.length}）
-        </button>
-        <button className={tab === "fields" ? "on" : ""} onClick={() => setTab("fields")}>
+        </Link>
+        <Link to={tabHref("fields")} className={`tab-link${tab === "fields" ? " on" : ""}`}>
           カスタムフィールド（{data.fields.length}）
-        </button>
-        <button className={tab === "publish" ? "on" : ""} onClick={() => setTab("publish")}>
+        </Link>
+        <Link to={tabHref("publish")} className={`tab-link${tab === "publish" ? " on" : ""}`}>
           公開{set.is_public ? "中" : ""}
-        </button>
+        </Link>
       </div>
       {tab === "publish" && <PublishEditor set={set} fields={data.fields} reload={reload} />}
       {tab === "fields" && <FieldsEditor setId={set.id} fields={data.fields} extraction={data.extraction} reload={reload} />}
