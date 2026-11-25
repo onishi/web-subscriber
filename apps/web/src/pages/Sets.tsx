@@ -251,23 +251,7 @@ export function SetPage() {
         ))}
       {tab === "members" && (
         <div className="panel">
-          {candidates.length > 0 && (
-            <div className="row" style={{ marginBottom: 12 }}>
-              <select
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) void toggle(e.target.value, true);
-                }}
-              >
-                <option value="">＋ 購読先を追加…</option>
-                {candidates.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {title(s)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          {candidates.length > 0 && <MemberPicker candidates={candidates} title={title} onAdd={(sid) => toggle(sid, true)} />}
           <table>
             <tbody>
               {data.members.map((m: any) => (
@@ -291,6 +275,46 @@ export function SetPage() {
 }
 
 /** 購読先ページ：所属するセットの切り替え */
+/** セットに入れる購読先を、名前・URL で絞り込んで追加する */
+function MemberPicker({ candidates, title, onAdd }: { candidates: any[]; title: (s: any) => string; onAdd: (id: string) => Promise<void> }) {
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hits = words.length ? candidates.filter((s) => words.every((w) => `${title(s)} ${s.input_url}`.toLowerCase().includes(w))) : [];
+  return (
+    <div className="member-picker">
+      <input type="text" placeholder={`購読先を検索して追加（${candidates.length} 件から。名前・URL）`} value={q} onChange={(e) => setQ(e.target.value)} />
+      {words.length > 0 && (
+        <ul className="member-hits">
+          {hits.slice(0, 30).map((s) => (
+            <li key={s.id} className="row">
+              <span className="spacer">
+                {title(s)} <span className="muted small">{s.input_url}</span>
+              </span>
+              <button
+                className="small"
+                disabled={busy === s.id}
+                onClick={async () => {
+                  setBusy(s.id);
+                  try {
+                    await onAdd(s.id);
+                  } finally {
+                    setBusy(null);
+                  }
+                }}
+              >
+                追加
+              </button>
+            </li>
+          ))}
+          {hits.length === 0 && <li className="muted small">見つかりません</li>}
+          {hits.length > 30 && <li className="muted small">ほか {hits.length - 30} 件。もう少し絞り込んでください</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function SetMembership({ subscriptionId, setIds, onChange }: { subscriptionId: string; setIds: string[]; onChange: () => void }) {
   const { data, reload } = useSets();
   const [adding, setAdding] = useState(false);

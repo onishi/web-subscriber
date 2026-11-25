@@ -68,8 +68,11 @@ const TOOLS: Tool[] = [
     name: "add_subscription",
     description:
       "購読先を追加する。config を省略すると AI が取得方法と抽出ルールを自動で調査・検証して下書きを作る（setup_session_id が返る。get_setup_session で進み具合を確認し、できた下書きを activate_config で有効化する）。config を渡すとその設定で直接作る。",
-    inputSchema: obj({ url: str("購読したいページ/フィードのURL"), title: str("表示名（省略可）"), config: { type: "object", description: "取得設定（省略時はAIが作る）" } }, ["url"]),
-    run: (a, call) => call("POST", "/subscriptions", pick(a, ["url", "title", "config"])),
+    inputSchema: obj(
+      { url: str("購読したいページ/フィードのURL"), title: str("表示名（省略可）"), config: { type: "object", description: "取得設定（省略時はAIが作る）" }, set_ids: { type: "array", items: { type: "string" }, description: "追加と同時に入れるセットのID（AI はセットのカスタムフィールドも参考に設定を作る）" } },
+      ["url"],
+    ),
+    run: (a, call) => call("POST", "/subscriptions", pick(a, ["url", "title", "config", "set_ids"])),
   },
   {
     name: "update_subscription",

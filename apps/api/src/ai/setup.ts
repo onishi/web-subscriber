@@ -681,7 +681,13 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
     }
     if (genericOg) {
       // サイト共通の og:image の代わりに、詳細ページの代表画像がページごとに取れているか
-      const imgs = (detail?.pages ?? []).map((x) => (x.values as { image?: unknown } | undefined)?.image).map((v) => (typeof v === "string" ? v : Array.isArray(v) ? String(v[0] ?? "") : "")).filter(Boolean);
+      // 詳細ページの値：標準外のフィールド（image など）は extracted の下に入る
+      const imgOf = (x: unknown) => {
+        const v = x as { image?: unknown; extracted?: { image?: unknown } } | undefined;
+        const i = v?.extracted?.image ?? v?.image;
+        return typeof i === "string" ? i : Array.isArray(i) ? String(i[0] ?? "") : "";
+      };
+      const imgs = (detail?.pages ?? []).map((x) => imgOf(x.values)).filter(Boolean);
       const distinct = new Set(imgs.filter((u) => u !== genericOg)).size;
       checks.push({ name: "画像", ok: !!detail && imgs.length >= Math.ceil(detail.page_count * 0.8) && distinct >= Math.min(2, imgs.length), detail: `og:image がサイト共通（${genericOg}）。詳細ページの代表画像 ${imgs.length}/${detail?.page_count ?? 0} ページ・異なる画像 ${distinct} 種` });
     }

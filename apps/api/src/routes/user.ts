@@ -54,7 +54,7 @@ userApi.get("/subscriptions", async (c) => {
 });
 
 userApi.post("/subscriptions", async (c) => {
-  const b = await c.req.json<{ url: string; title?: string; config?: unknown }>();
+  const b = await c.req.json<{ url: string; title?: string; config?: unknown; set_ids?: unknown }>();
   let url: string;
   try {
     url = new URL(b.url).toString();
@@ -69,6 +69,12 @@ userApi.post("/subscriptions", async (c) => {
   )
     .bind(id, url, b.title ?? null, await scheduleMinute(id), c.env.DEFAULT_TIMEZONE || "Asia/Tokyo", now, now)
     .run();
+  // 追加と同時にセットに入れる（AI の設定作成はセットのカスタムフィールドも参考にする）
+  const setIds = Array.isArray(b.set_ids) ? [...new Set(b.set_ids.filter((x): x is string => typeof x === "string"))].slice(0, 50) : [];
+  if (setIds.length)
+    await c.env.DB.batch(
+      setIds.map((sid) => c.env.DB.prepare("INSERT OR IGNORE INTO set_members (set_id, subscription_id, added_at) SELECT id, ?, ? FROM sets WHERE id = ?").bind(id, now, sid)),
+    );
   if (b.config) {
     const r = await createConfigVersion(c.env, id, b.config, "manual", null);
     if ("errors" in r) return c.json({ id, errors: r.errors }, 400);

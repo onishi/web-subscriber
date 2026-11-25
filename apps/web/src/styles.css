@@ -236,3 +236,9 @@ main:has(.split), main:has(.reader-fill) { max-width: none; }
 .token-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .token-table th, .token-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .side .nav-settings { margin-top: auto; }
+
+.add-sets { margin-top: 10px; display: grid; gap: 4px; }
+.member-picker { margin-bottom: 12px; }
+.member-hits { list-style: none; margin: 6px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 6px; max-height: 320px; overflow: auto; }
+.member-hits li { padding: 6px 10px; border-bottom: 1px solid var(--line); gap: 8px; }
+.member-hits li:last-child { border-bottom: none; }
