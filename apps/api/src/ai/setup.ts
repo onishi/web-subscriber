@@ -322,11 +322,21 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       const main = v1[listCfg.fetch.method];
       const sample = main && !("error" in main) ? sampleDetailUrls(main, listCfg.source.url) : [];
       let detailCheck: DetailValidation | null = null;
-      const wantDetail = p.kind === "detail" || (!prop.config.detail && !!env.GEMINI_API_KEY && !!main && !("error" in main) && lacksContent(main));
+      const okMain = !!main && !("error" in main);
+      const noContent = okMain && lacksContent(main as ValResult);
+      // リンク先の og:image がどのページも同じ（サイト共通の画像）なら、本文の代表画像を取るルールを作る
+      const outline =
+        sample.length >= 2 && env.GEMINI_API_KEY && (p.kind === "detail" || !prop.config.detail)
+          ? ((await this.probe(step, sid, "detail-outline", { kind: "outline", urls: sample.slice(0, 3), method: "http" })) as { pages?: { meta?: { og_image?: string | null } }[] })
+          : null;
+      const ogs = (outline?.pages ?? []).map((x) => x.meta?.og_image ?? null);
+      const genericOg = ogs.length >= 2 && !!ogs[0] && ogs.every((x) => x === ogs[0]) ? ogs[0] : null;
+      const wantDetail = p.kind === "detail" || (!prop.config.detail && !!env.GEMINI_API_KEY && okMain && (noContent || !!genericOg));
       if (wantDetail && sample.length > 0) {
-        await sdo(step, "detail-start", async () => addProgress(env, sid, "detail", "running", `一覧に本文がないため、リンク先 ${sample.length} ページを比較して取得ルールを作成`));
+        const why = [noContent ? "一覧に本文がない" : null, genericOg ? "リンク先の og:image がどのページも同じ" : null].filter(Boolean).join("・") || "詳細ページの取得ルールを作る";
+        await sdo(step, "detail-start", async () => addProgress(env, sid, "detail", "running", `${why}ため、リンク先 ${sample.length} ページを比較して取得ルールを作成`));
         try {
-          const dp = await this.detailAiLoop(step, p, listCfg, sample, (main as ValResult).items.slice(0, 5));
+          const dp = await this.detailAiLoop(step, p, listCfg, sample, (main as ValResult).items.slice(0, 5), { outline, genericOg, needContent: noContent || p.kind === "detail" });
           // 一覧で本文が取れている購読で「本文のない item のみ」にすると、詳細ページを一度も取りに行かない
           if (dp.detail.when === "missing_content" && !lacksContent(main as ValResult)) dp.detail = { ...dp.detail, when: "always" };
           prop = { ...prop, config: { ...prop.config, detail: dp.detail }, unverified: [...prop.unverified, ...dp.unverified], rationale: `${prop.rationale}\n\n詳細ページ: ${dp.rationale}` };
@@ -347,7 +357,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
 
       // 5) 報告・draft 作成
       const fp = prop;
-      const result = await sdo(step, "finalize", async () => this.finalize(p, fp, v1, v2, detailCheck));
+      const result = await sdo(step, "finalize", async () => this.finalize(p, fp, v1, v2, detailCheck, genericOg));
       await sdo(step, "done", async () => addProgress(env, sid, "validate", "done", result.headline));
       // 新規の購読：チェックが全部通っていれば確認待ちにせず自動で採用して巡回を始める
       // （AI が作れず自動判定にした設定は質が読めないので、人の確認に回す）
@@ -501,8 +511,19 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
   }
 
   /** 詳細ページ（item のリンク先）の取得ルールを AI が複数ページを比較して作る */
-  private async detailAiLoop(step: WorkflowStep, p: SetupParams, config: SubscriptionConfig, sampleUrls: string[], listSample: unknown[]): Promise<DetailProposal> {
-    const outline = await this.probe(step, p.sessionId, "detail-outline", { kind: "outline", urls: sampleUrls.slice(0, 3), method: "http" });
+  private async detailAiLoop(
+    step: WorkflowStep,
+    p: SetupParams,
+    config: SubscriptionConfig,
+    sampleUrls: string[],
+    listSample: unknown[],
+    o: { outline: unknown; genericOg: string | null; needContent: boolean },
+  ): Promise<DetailProposal> {
+    const outline = o.outline ?? (await this.probe(step, p.sessionId, "detail-outline", { kind: "outline", urls: sampleUrls.slice(0, 3), method: "http" }));
+    const imageNote = o.genericOg
+      ? `\n\n【画像】リンク先の og:image はどのページも同じ（${o.genericOg}）で、サイト共通の画像です。fields に image を必ず入れ、本文中の代表画像（ページごとに異なる、その item の写真・ポスター・メインビジュアル）を css か xpath で指定して take:{"attr":"src"}（遅延読み込みなら data-src 等）と resolve_url で取ってください。og:image・twitter:image などの meta、ロゴ・アイコン・バナー・ヘッダーの画像は使わないでください。run_detail_extraction で各ページの image が別々の画像になっていることを確かめてください。` +
+        (o.needContent ? "" : "\n一覧で本文は取れているので、summary・content は不要です（image と、必要なら period などだけでよい）。")
+      : "";
     return this.toolLoop<DetailProposal>(step, p, {
       prefix: "detail",
       system: DETAIL_SYSTEM_PROMPT,
@@ -510,14 +531,20 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       submitName: "submit_detail",
       startNote: "AIがリンク先（詳細ページ）の取得ルールを調査中",
       intro: async () =>
-        `購読先: ${config.source.url}\n一覧から取れている item の例（本文が不足しています）:\n<untrusted_page_data>\n${truncateJson(listSample, 8000)}\n</untrusted_page_data>\n\n` +
+        `購読先: ${config.source.url}\n一覧から取れている item の例${o.needContent ? "（本文が不足しています）" : ""}:\n<untrusted_page_data>\n${truncateJson(listSample, 8000)}\n</untrusted_page_data>\n\n` +
         `詳細ページのサンプルURL（run_detail_extraction で urls を省略するとこれらで実行します）:\n${sampleUrls.join("\n")}\n\n` +
         `以下は先頭 ${Math.min(3, sampleUrls.length)} ページを http（JS非実行）で取得したアウトラインとメタ情報です。\n<untrusted_page_data>\n${truncateJson(outline, 50000)}\n</untrusted_page_data>\n\n` +
-        `複数ページを比較して共通の構造から詳細取得ルールを作り、run_detail_extraction で検証してから submit_detail で提出してください。`,
+        `複数ページを比較して共通の構造から詳細取得ルールを作り、run_detail_extraction で検証してから submit_detail で提出してください。` +
+        imageNote,
       submit: (input) => {
         const r = DetailSchema.safeParse(input.detail);
         if (!r.success) return { error: "スキーマ検証エラー:\n" + r.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("\n") };
         if (Object.keys(r.data.fields).length === 0) return { error: "fields が空です" };
+        if (o.genericOg) {
+          const img = r.data.fields.image;
+          if (!img) return { error: "og:image がサイト共通なので、fields.image（本文中の代表画像）を入れてください" };
+          if (/og:image|twitter:image|meta\b/i.test(JSON.stringify(img))) return { error: "image に og:image などの meta は使えません（サイト共通の画像です）。本文中の代表画像の img を指定してください" };
+        }
         return { value: { detail: r.data, rationale: String(input.rationale ?? ""), unverified: Array.isArray(input.unverified) ? (input.unverified as unknown[]).map(String) : [] } };
       },
       tool: (name, input) => {
@@ -624,7 +651,7 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
     throw new Error("AIの試行回数上限に達しました");
   }
 
-  private async finalize(p: SetupParams, prop: Proposal, v1: Record<string, ValResult>, v2: Record<string, ValResult>, detail: DetailValidation | null) {
+  private async finalize(p: SetupParams, prop: Proposal, v1: Record<string, ValResult>, v2: Record<string, ValResult>, detail: DetailValidation | null, genericOg: string | null = null) {
     const env = this.env;
     const m = prop.config.fetch.method;
     const main = v1[m];
@@ -651,6 +678,12 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       checks.push({ name: "詳細ページの取得", ok: rate >= 0.8, detail: `${detail.ok_pages}/${detail.page_count} ページで取得` });
       const fill = Object.entries(detail.field_fill);
       checks.push({ name: "詳細ページのフィールド", ok: fill.some(([k, v]) => (k === "summary" || k === "content") && v >= 0.8), detail: fill.map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(" / ") });
+    }
+    if (genericOg) {
+      // サイト共通の og:image の代わりに、詳細ページの代表画像がページごとに取れているか
+      const imgs = (detail?.pages ?? []).map((x) => (x.values as { image?: unknown } | undefined)?.image).map((v) => (typeof v === "string" ? v : Array.isArray(v) ? String(v[0] ?? "") : "")).filter(Boolean);
+      const distinct = new Set(imgs.filter((u) => u !== genericOg)).size;
+      checks.push({ name: "画像", ok: !!detail && imgs.length >= Math.ceil(detail.page_count * 0.8) && distinct >= Math.min(2, imgs.length), detail: `og:image がサイト共通（${genericOg}）。詳細ページの代表画像 ${imgs.length}/${detail?.page_count ?? 0} ページ・異なる画像 ${distinct} 種` });
     }
     const tw = titleWarnings(main.items as { title?: unknown }[]);
     checks.push({ name: "タイトル", ok: tw.length === 0, detail: tw.length ? tw.map((w) => w.split("。")[0]).join(" / ") : "見出しらしいタイトルが取れている" });

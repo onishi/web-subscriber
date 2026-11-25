@@ -40,7 +40,7 @@ const PUBLIC_OPTIONS_DOC = `options（公開ページの表示設定。指定し
 - filters: Filter[]（すべてのタブにかかる絞り込み）
 - facet: 絞り込みチップに使う list/text フィールドの key | null
 - source_filter: bool（情報源ごとの絞り込みボタン）
-- theme: "warm"（テラコッタ・既定）| "ink"（モノクロ）| "indigo"（藍）| "forest"（森）| "ocean"（海）| "sakura"（桜）
+- theme: "warm"（弁柄・既定） | "akane"（茜） | "sakura"（桜） | "yamabuki"（山吹） | "uguisu"（鶯） | "forest"（千歳緑） | "ocean"（浅葱） | "indigo"（藍） | "fuji"（藤） | "ink"（墨）
 - color_mode: "auto"（端末の設定に合わせる・既定）| "light" | "dark"
 - calendar_key: "published" | "f:<日付フィールドkey>"（calendar 表示でマスに置く日付）
 - excerpt_length: number, per_page: number

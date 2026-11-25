@@ -86,14 +86,18 @@ export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export type PublicWidth = "normal" | "wide" | "full";
 export type ColorMode = "auto" | "light" | "dark";
 type Palette = { bg: string; panel: string; text: string; muted: string; line: string; accent: string; "accent-weak": string };
-/** 公開ページの色調：明るい配色と暗い配色の組 */
+/** 公開ページの色調（和の伝統色）：明るい配色と暗い配色の組。キーは保存値なので変えない */
 export const THEMES = {
-  warm: { label: "テラコッタ", light: { bg: "#faf8f4", panel: "#ffffff", text: "#1d1b18", muted: "#6e6a62", line: "#e6e1d7", accent: "#8a3b1e", "accent-weak": "#f3e7df" }, dark: { bg: "#161513", panel: "#1f1d1a", text: "#eeeae2", muted: "#a39d92", line: "#34312c", accent: "#e3a27f", "accent-weak": "#3a2a22" } },
-  ink: { label: "モノクロ", light: { bg: "#f7f7f5", panel: "#ffffff", text: "#1a1a1a", muted: "#6b6b6b", line: "#e2e2df", accent: "#1a1a1a", "accent-weak": "#ececea" }, dark: { bg: "#121212", panel: "#1c1c1c", text: "#ededed", muted: "#9a9a9a", line: "#2e2e2e", accent: "#f0f0f0", "accent-weak": "#2a2a2a" } },
-  indigo: { label: "藍", light: { bg: "#f5f7fb", panel: "#ffffff", text: "#172033", muted: "#5f6b80", line: "#dde3ee", accent: "#2f4a9e", "accent-weak": "#e4eaf8" }, dark: { bg: "#0f1420", panel: "#171d2b", text: "#e6ebf5", muted: "#9aa5ba", line: "#2a3346", accent: "#9db4f5", "accent-weak": "#22305a" } },
-  forest: { label: "森", light: { bg: "#f5f8f3", panel: "#ffffff", text: "#18221a", muted: "#5f6f60", line: "#dde6da", accent: "#2f6b3a", "accent-weak": "#e2efe2" }, dark: { bg: "#101611", panel: "#182019", text: "#e6eee5", muted: "#9bab9b", line: "#2b372c", accent: "#8fd19a", "accent-weak": "#1f3523" } },
-  ocean: { label: "海", light: { bg: "#f3f8f9", panel: "#ffffff", text: "#13232a", muted: "#5a6f77", line: "#d9e6ea", accent: "#0f6f86", "accent-weak": "#dff0f4" }, dark: { bg: "#0e1619", panel: "#152024", text: "#e3eef1", muted: "#93a9b0", line: "#263538", accent: "#7fd0e2", "accent-weak": "#183740" } },
+  warm: { label: "弁柄", light: { bg: "#faf8f4", panel: "#ffffff", text: "#1d1b18", muted: "#6e6a62", line: "#e6e1d7", accent: "#8a3b1e", "accent-weak": "#f3e7df" }, dark: { bg: "#161513", panel: "#1f1d1a", text: "#eeeae2", muted: "#a39d92", line: "#34312c", accent: "#e3a27f", "accent-weak": "#3a2a22" } },
+  akane: { label: "茜", light: { bg: "#fbf6f5", panel: "#ffffff", text: "#2a1a19", muted: "#776261", line: "#efdedb", accent: "#b0262c", "accent-weak": "#f7e1df" }, dark: { bg: "#1a1111", panel: "#231818", text: "#f3e5e4", muted: "#b49a98", line: "#3b2828", accent: "#f08a85", "accent-weak": "#45201f" } },
   sakura: { label: "桜", light: { bg: "#fcf7f8", panel: "#ffffff", text: "#2a1c20", muted: "#7a6469", line: "#f0dfe3", accent: "#b0466a", "accent-weak": "#f8e4ea" }, dark: { bg: "#1a1215", panel: "#23191c", text: "#f2e6e9", muted: "#b39aa1", line: "#3a2a2f", accent: "#f29bb8", "accent-weak": "#43242f" } },
+  yamabuki: { label: "山吹", light: { bg: "#fbf8ef", panel: "#ffffff", text: "#231d10", muted: "#6f6650", line: "#ece4cf", accent: "#9a6a00", "accent-weak": "#f6ebcc" }, dark: { bg: "#17140c", panel: "#201c12", text: "#f0e9d8", muted: "#a89e86", line: "#362f20", accent: "#f0c048", "accent-weak": "#3a2f12" } },
+  uguisu: { label: "鶯", light: { bg: "#f7f7f0", panel: "#ffffff", text: "#1f2015", muted: "#66675a", line: "#e3e3d3", accent: "#6a6a1f", "accent-weak": "#ececd6" }, dark: { bg: "#13140e", panel: "#1b1c14", text: "#ebebdd", muted: "#a2a38f", line: "#2f3023", accent: "#c9c870", "accent-weak": "#2c2d17" } },
+  forest: { label: "千歳緑", light: { bg: "#f5f8f3", panel: "#ffffff", text: "#18221a", muted: "#5f6f60", line: "#dde6da", accent: "#2f6b3a", "accent-weak": "#e2efe2" }, dark: { bg: "#101611", panel: "#182019", text: "#e6eee5", muted: "#9bab9b", line: "#2b372c", accent: "#8fd19a", "accent-weak": "#1f3523" } },
+  ocean: { label: "浅葱", light: { bg: "#f3f8f9", panel: "#ffffff", text: "#13232a", muted: "#5a6f77", line: "#d9e6ea", accent: "#0f6f86", "accent-weak": "#dff0f4" }, dark: { bg: "#0e1619", panel: "#152024", text: "#e3eef1", muted: "#93a9b0", line: "#263538", accent: "#7fd0e2", "accent-weak": "#183740" } },
+  indigo: { label: "藍", light: { bg: "#f5f7fb", panel: "#ffffff", text: "#172033", muted: "#5f6b80", line: "#dde3ee", accent: "#2f4a9e", "accent-weak": "#e4eaf8" }, dark: { bg: "#0f1420", panel: "#171d2b", text: "#e6ebf5", muted: "#9aa5ba", line: "#2a3346", accent: "#9db4f5", "accent-weak": "#22305a" } },
+  fuji: { label: "藤", light: { bg: "#f8f6fb", panel: "#ffffff", text: "#221c2e", muted: "#6a6278", line: "#e6e0ef", accent: "#6c4a9e", "accent-weak": "#ece4f6" }, dark: { bg: "#15121b", panel: "#1d1925", text: "#ece7f4", muted: "#a59db3", line: "#322b3d", accent: "#c3a6ec", "accent-weak": "#2f2442" } },
+  ink: { label: "墨", light: { bg: "#f7f7f5", panel: "#ffffff", text: "#1a1a1a", muted: "#6b6b6b", line: "#e2e2df", accent: "#1a1a1a", "accent-weak": "#ececea" }, dark: { bg: "#121212", panel: "#1c1c1c", text: "#ededed", muted: "#9a9a9a", line: "#2e2e2e", accent: "#f0f0f0", "accent-weak": "#2a2a2a" } },
 } satisfies Record<string, { label: string; light: Palette; dark: Palette }>;
 export type PublicTheme = keyof typeof THEMES;
 const COLOR_MODES: ColorMode[] = ["auto", "light", "dark"];
@@ -797,8 +801,8 @@ publicPages.get("/:slug", async (c) => {
   );
 });
 
-// サイト共通の og:image（og_generic）は、詳細ページから取った画像があればそちらを優先する
-const IMAGE = "COALESCE(CASE WHEN i.image_source IS NOT 'og_generic' THEN i.image_url END, json_extract(i.detail_json, '$.native.extracted_fields.image'), i.image_url)";
+// 画像：配信元の指定 → 詳細ページの取得ルールで取った画像（設定で指定したもの）→ リンク先の og:image・本文の画像
+const IMAGE = "COALESCE(CASE WHEN i.image_source = 'feed' THEN i.image_url END, json_extract(i.detail_json, '$.native.extracted_fields.image'), i.image_url)";
 const SUMMARY =
   "COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value'), json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value'))";
 

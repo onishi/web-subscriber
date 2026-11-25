@@ -619,12 +619,16 @@ type FilterKind = "date" | "text" | "list" | "number" | "boolean" | "plain";
 type Filter = { key: string; op: FilterOp; value?: string | number };
 /** 公開ページの色調（API の THEMES と同じキー）：[キー, 名前, 背景, アクセント, 淡いアクセント] */
 const THEME_CHOICES: [string, string, string, string, string][] = [
-  ["warm", "テラコッタ", "#faf8f4", "#8a3b1e", "#f3e7df"],
-  ["ink", "モノクロ", "#f7f7f5", "#1a1a1a", "#ececea"],
-  ["indigo", "藍", "#f5f7fb", "#2f4a9e", "#e4eaf8"],
-  ["forest", "森", "#f5f8f3", "#2f6b3a", "#e2efe2"],
-  ["ocean", "海", "#f3f8f9", "#0f6f86", "#dff0f4"],
+  ["warm", "弁柄", "#faf8f4", "#8a3b1e", "#f3e7df"],
+  ["akane", "茜", "#fbf6f5", "#b0262c", "#f7e1df"],
   ["sakura", "桜", "#fcf7f8", "#b0466a", "#f8e4ea"],
+  ["yamabuki", "山吹", "#fbf8ef", "#9a6a00", "#f6ebcc"],
+  ["uguisu", "鶯", "#f7f7f0", "#6a6a1f", "#ececd6"],
+  ["forest", "千歳緑", "#f5f8f3", "#2f6b3a", "#e2efe2"],
+  ["ocean", "浅葱", "#f3f8f9", "#0f6f86", "#dff0f4"],
+  ["indigo", "藍", "#f5f7fb", "#2f4a9e", "#e4eaf8"],
+  ["fuji", "藤", "#f8f6fb", "#6c4a9e", "#ece4f6"],
+  ["ink", "墨", "#f7f7f5", "#1a1a1a", "#ececea"],
 ];
 
 type Section = { id: string; label: string; conditions: Filter[]; tab: boolean; badge: boolean; hidden: boolean };
