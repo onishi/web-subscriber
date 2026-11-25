@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeDate, normalizeValue, buildFieldQuery, itemText, type SetField } from "../src/fields.js";
+import { normalizeDate, normalizeValue, buildFieldQuery, itemText, completeYear, type SetField } from "../src/fields.js";
 
 const F = (key: string, type: SetField["type"]): SetField => ({ id: `id_${key}`, set_id: "s", key, label: key, type, description: "", position: 0 });
 
@@ -68,5 +68,17 @@ describe("itemText", () => {
     const detail = { ...base, native: { format: "html", extracted_fields: { period: "2027年2月6日（土）〜5月5日（水・祝）" } } };
     const t = itemText({ data_json: JSON.stringify(list), detail_json: JSON.stringify(detail) });
     expect(t).toContain("period: 2027年2月6日（土）〜5月5日（水・祝）");
+  });
+});
+
+describe("completeYear", () => {
+  it("picks the year nearest to the reference date", () => {
+    expect(completeYear("11-25", "2026-11-24")).toBe("2026-11-25");
+    expect(completeYear("1/10", "2026-12-20")).toBe("2027-01-10");
+    expect(completeYear("12-28", "2027-01-05")).toBe("2026-12-28");
+    expect(completeYear("2-29", "2027-03-01")).toBe("2028-02-29");
+    expect(completeYear("13-01", "2026-01-01")).toBeNull();
+    expect(normalizeValue("date", "11-25", "2026-11-24")).toEqual([{ date: "2026-11-25" }]);
+    expect(normalizeValue("date", "2020-11-25", "2026-11-24")).toEqual([{ date: "2020-11-25" }]);
   });
 });
