@@ -351,6 +351,9 @@ describe("item images (og:image)", () => {
     const h = `<body><header><img src="/h.jpg"></header><main><img src="/logo.svg"><img src="/i.png" width="16"><img src="/sns_icon.png"><img srcset="/big.jpg 2x, /small.jpg 1x"></main></body>`;
     expect(parsePageImage(h, "https://ex.com/a/")).toBe("https://ex.com/big.jpg");
     expect(parsePageImage(h, "https://ex.com/a/", new Set(["https://ex.com/big.jpg"]))).toBeNull();
+    // テーマ内でも展覧会ごとの画像は拾い、共通素材（common / index など）は拾わない
+    const t = `<main><img src="/wp-content/themes/x/img/common/deco.jpg"><img src="/wp-content/themes/x/img/index/fish.png"><img data-src="/wp-content/themes/x/img/exhibition/2610/main.jpg"></main>`;
+    expect(parsePageImage(t, "https://ex.com/")).toBe("https://ex.com/wp-content/themes/x/img/exhibition/2610/main.jpg");
   });
 
   it("uses the body image when og:image is the same on every page", async () => {

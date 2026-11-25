@@ -102,9 +102,10 @@ th { font-size: 12px; color: var(--muted); font-weight: 600; white-space: nowrap
 .item:hover { background: var(--accent-weak); }
 .logo { width: 120px; height: 63px; object-fit: cover; border-radius: 6px; background: var(--line); }
 .logo-sm { width: 48px; height: 25px; object-fit: cover; border-radius: 3px; background: var(--line); }
-.item.has-thumb { grid-template-columns: auto 1fr auto; }
-.item .thumb { width: 96px; height: 60px; object-fit: cover; border-radius: 4px; background: var(--line); }
-@media (max-width: 600px) { .item .thumb { width: 64px; height: 44px; } }
+/* 右の列：情報源・日時の下にサムネイル（本文の左端は画像の有無に関係なくそろえる） */
+.item-side { text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+.item .thumb { display: block; width: 120px; height: 75px; margin-top: 6px; object-fit: cover; border-radius: 4px; background: var(--line); }
+@media (max-width: 600px) { .item .thumb { width: 80px; height: 50px; } }
 .detail { white-space: normal; overflow-wrap: anywhere; }
 .detail img { max-width: 100%; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; }

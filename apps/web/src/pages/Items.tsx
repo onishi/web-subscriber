@@ -388,7 +388,7 @@ export function ItemList({
                   if (el) rowRefs.current.set(it.id, el);
                   else rowRefs.current.delete(it.id);
                 }}
-                className={`item ${it.is_read ? "read" : ""} ${!compact && it.image_url ? "has-thumb" : ""} ${cursor === i ? "cursor" : ""} ${open === it.id ? "opened" : ""}`}
+                className={`item ${it.is_read ? "read" : ""} ${cursor === i ? "cursor" : ""} ${open === it.id ? "opened" : ""}`}
                 onClick={() => {
                   setCursor(i);
                   setOpen(open === it.id && !split ? null : it.id);
@@ -406,7 +406,6 @@ export function ItemList({
                   </>
                 ) : (
                   <>
-                    {it.image_url && <img className="thumb" src={it.image_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />}
                     <div>
                       <div className="row">
                         {isNew && <span className="badge accent">未読</span>}
@@ -420,7 +419,7 @@ export function ItemList({
                         <FieldValues key={fs.id} defs={fs.fields} values={it.set_fields?.[fs.id]} manual={it.set_fields_manual?.[fs.id]} setName={fieldSets.length > 1 ? fs.name : undefined} />
                       ))}
                     </div>
-                    <div className="small muted" style={{ textAlign: "right" }}>
+                    <div className="small muted item-side">
                       {!subscriptionId && (
                         <div>
                           <Link to={`/subscriptions/${it.subscription_id}`} onClick={(e) => e.stopPropagation()}>
@@ -430,6 +429,7 @@ export function ItemList({
                       )}
                       <div title="公開日時（配信元の表記）">{fmtDateValue(it.published_at) || fmtDateValue(it.updated_at) || ""}</div>
                       <div title="検出日時">検出 {fmtTime(it.last_changed_at ?? it.first_seen_at)}</div>
+                      {it.image_url && <img className="thumb" src={it.image_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = "none")} />}
                     </div>
                   </>
                 )}

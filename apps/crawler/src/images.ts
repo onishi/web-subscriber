@@ -49,7 +49,7 @@ export function parsePageImage(html: string, baseUrl: string, exclude: Set<strin
     const w = Number(attrs.width), h = Number(attrs.height);
     if ((w && w < 200) || (h && h < 120)) continue;
     const hint = `${src} ${attrs.class ?? ""} ${attrs.id ?? ""} ${attrs.alt ?? ""}`.toLowerCase();
-    if (/\.svg(\?|$)|\/themes?\/|logo|icon|sprite|banner|btn|button|arrow|spacer|blank|loading|avatar|sns|share|twitter|facebook|instagram|line_|ロゴ|アイコン/.test(hint)) continue;
+    if (/\.svg(\?|$)|\/themes?\/.*\/(common|index|top|parts|ui)\/|logo|icon|sprite|banner|btn|button|arrow|spacer|blank|loading|avatar|sns|share|twitter|facebook|instagram|line_|ロゴ|アイコン/.test(hint)) continue;
     try {
       const u = new URL(decodeEntities(src.trim()), baseUrl);
       if ((u.protocol === "http:" || u.protocol === "https:") && !exclude.has(u.toString())) return u.toString();
