@@ -41,6 +41,8 @@ export interface LeasedJob {
 export interface ItemImagesInstruction {
   mode: "trial" | "on";
   skip_keys: string[];
+  /** この購読で複数の item に共通していた og:image（サイト共通の画像）。これに当たったら本文の画像を探す */
+  generic_images?: string[];
 }
 
 export type ProbeRequest =
@@ -63,7 +65,11 @@ export interface SubmittedItem {
   position: number;
   data: ItemData;
   /** リンク先の og:image を確認した結果（確認しなかった item には付けない） */
-  image_lookup?: { url: string | null };
+  image_lookup?: {
+    url: string | null;
+    /** og_image：ページの og:image / page_image：og:image がサイト共通の画像だったので本文から選んだ画像 / og_generic：サイト共通の og:image しかなかった */
+    source?: "og_image" | "page_image" | "og_generic";
+  };
   /** 詳細ページから取得した値（取得を試みた item のみ） */
   detail?: ItemDetailResult;
 }

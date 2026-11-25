@@ -162,10 +162,18 @@ async function itemImagesInstruction(env: Env, subId: string, configVersionId: s
   const sub = await env.DB.prepare("SELECT item_image_mode FROM subscriptions WHERE id = ?").bind(subId).first<{ item_image_mode: string | null }>();
   if (!sub || sub.item_image_mode === "off") return null;
   const cv = await env.DB.prepare("SELECT identity_scheme_hash FROM config_versions WHERE id = ?").bind(configVersionId).first<{ identity_scheme_hash: string }>();
-  const rs = await env.DB.prepare("SELECT identity_key FROM items WHERE subscription_id = ? AND identity_scheme = ? AND (image_url IS NOT NULL OR image_checked_at IS NOT NULL)")
-    .bind(subId, cv?.identity_scheme_hash ?? "")
+  // 複数の item で同じ og:image はサイト共通の画像：その item は取り直して本文の画像を探す
+  const gen = await env.DB.prepare("SELECT image_url FROM items WHERE subscription_id = ? AND image_source IN ('og_image', 'og_generic') AND image_url IS NOT NULL GROUP BY image_url HAVING COUNT(*) >= 2")
+    .bind(subId)
+    .all<{ image_url: string }>();
+  const generic = gen.results.map((r) => r.image_url);
+  const rs = await env.DB.prepare(
+    `SELECT identity_key FROM items WHERE subscription_id = ? AND identity_scheme = ? AND (image_url IS NOT NULL OR image_checked_at IS NOT NULL)
+       AND NOT (image_source = 'og_image' AND image_url IN (SELECT value FROM json_each(?)))`,
+  )
+    .bind(subId, cv?.identity_scheme_hash ?? "", JSON.stringify(generic))
     .all<{ identity_key: string }>();
-  return { mode: sub.item_image_mode === "og_image" ? "on" : "trial", skip_keys: rs.results.map((r) => r.identity_key) };
+  return { mode: sub.item_image_mode === "og_image" ? "on" : "trial", skip_keys: rs.results.map((r) => r.identity_key), ...(generic.length ? { generic_images: generic } : {}) };
 }
 
 /** 詳細ページ取得の指示。現行の取得方式で取得済みの item は除外する */

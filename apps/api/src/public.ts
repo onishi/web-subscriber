@@ -262,6 +262,94 @@ publicPages.get("/", async (c) => {
   );
 });
 
+/**
+ * 公開ページの Atom フィード（/<slug>/feed.xml）。新しく見つけた順に最新 50 件。
+ * 公開ページと同じ絞り込み条件・区分に従い、?tab=<区分> でその区分だけにできる
+ */
+publicPages.get("/:slug/feed.xml", async (c) => {
+  const slug = c.req.param("slug");
+  const st = await c.env.DB.prepare("SELECT * FROM sets WHERE public_slug = ?").bind(slug).first<Record<string, string | number | null>>();
+  const token = c.req.query("token") ?? "";
+  if (!st || (!st.is_public && !(typeof st.public_preview_token === "string" && token && safeEqual(token, st.public_preview_token)))) return c.text("not found", 404);
+  const fields = await loadFields(c.env, st.id as string);
+  const opts = normalizePublicOptions(json<PublicOptions>(st.public_options_json as string | null, {}), fields);
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  const qTab = c.req.query("tab") ?? "";
+  const tab = opts.sections.some((x) => x.id === qTab) ? qTab : "all";
+  const { where, args } = scopeSql(st.id as string, opts, byKey, jstToday(), tab);
+  const rs = await c.env.DB.prepare(
+    `SELECT i.id, i.subscription_id, i.title_text, i.primary_link, i.first_seen_at, i.last_changed_at,
+       ${IMAGE} AS image, ${SUMMARY} AS summary,
+       COALESCE(json_extract(i.detail_json, '$.published_at.value'), json_extract(i.data_json, '$.published_at.value')) AS published,
+       (SELECT COALESCE(s.display_title, s.input_url) FROM subscriptions s WHERE s.id = i.subscription_id) AS source
+     FROM items i WHERE ${where.join(" AND ")} ORDER BY i.first_seen_at DESC, i.id DESC LIMIT 50`,
+  )
+    .bind(...args)
+    .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null; source: string | null }>();
+  const items = rs.results;
+  // 公開ページに出しているカスタムフィールド（期間を含む）を本文に添える
+  const shown = [...new Set([...opts.fields, ...(opts.period ? [opts.period.start, opts.period.end] : [])])].map((k) => byKey.get(k)).filter((f): f is SetField => !!f);
+  const values = new Map<string, { label: string; text: string }[]>();
+  if (items.length && shown.length) {
+    const vr = await c.env.DB.prepare(
+      `SELECT item_id, field_id, value_text, value_num, value_date FROM item_field_values WHERE item_id IN (${items.map(() => "?").join(",")}) AND field_id IN (${shown.map(() => "?").join(",")}) ORDER BY ord`,
+    )
+      .bind(...items.map((i) => i.id), ...shown.map((f) => f.id))
+      .all<{ item_id: string; field_id: string; value_text: string | null; value_num: number | null; value_date: string | null }>();
+    const by = new Map<string, Map<string, string[]>>();
+    for (const r of vr.results) {
+      const m = by.get(r.item_id) ?? new Map<string, string[]>();
+      const f = shown.find((x) => x.id === r.field_id)!;
+      const d = displayValue(f.type, r);
+      m.set(f.id, [...(m.get(f.id) ?? []), f.type === "date" ? fmtDate(String(d)) : f.type === "boolean" ? (d ? "はい" : "いいえ") : String(d)]);
+      by.set(r.item_id, m);
+    }
+    for (const [id, m] of by) values.set(id, shown.filter((f) => m.has(f.id)).map((f) => ({ label: f.label, text: m.get(f.id)!.join("・") })));
+  }
+  const url = new URL(c.req.url);
+  const pageUrl = `${url.origin}${url.pathname.replace(/\/feed\.xml$/, "")}${tab !== "all" ? `?tab=${encodeURIComponent(tab)}` : ""}`;
+  const title = ((st.public_title as string) || (st.name as string)) + (tab !== "all" ? `（${opts.sections.find((x) => x.id === tab)?.label ?? tab}）` : "");
+  const x = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const iso = (v: string) => new Date(Date.parse(v)).toISOString();
+  const updated = items.reduce((m, i) => (i.first_seen_at > m ? i.first_seen_at : m), (st.updated_at as string) ?? new Date().toISOString());
+  const entries = items.map((i) => {
+    const link = safeUrl(i.primary_link);
+    const img = safeUrl(i.image);
+    const sum = excerpt(i.summary, 300);
+    const vals = values.get(i.id) ?? [];
+    const body = [
+      img ? `<p><img src="${x(img)}" alt="" /></p>` : "",
+      vals.length ? `<dl>${vals.map((v) => `<dt>${x(v.label)}</dt><dd>${x(v.text)}</dd>`).join("")}</dl>` : "",
+      sum ? `<p>${x(sum)}</p>` : "",
+      i.source ? `<p>情報源：${x(i.source)}</p>` : "",
+    ].join("");
+    const pub = i.published && !Number.isNaN(Date.parse(i.published)) ? iso(i.published) : null;
+    return `<entry>
+<id>tag:${x(url.hostname)},2026:item:${i.id}</id>
+<title>${x(i.title_text ?? i.primary_link ?? "")}</title>
+${link ? `<link rel="alternate" href="${x(link)}" />` : ""}
+${pub ? `<published>${pub}</published>` : ""}
+<updated>${iso(i.last_changed_at ?? i.first_seen_at)}</updated>
+${i.source ? `<author><name>${x(i.source)}</name></author>` : ""}
+${sum ? `<summary>${x(sum)}</summary>` : ""}
+<content type="html">${x(body)}</content>
+</entry>`;
+  });
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">
+<id>tag:${x(url.hostname)},2026:set:${x(slug)}${tab !== "all" ? `:${x(tab)}` : ""}</id>
+<title>${x(title)}</title>
+${st.public_description ? `<subtitle>${x(String(st.public_description))}</subtitle>` : ""}
+<link rel="self" type="application/atom+xml" href="${x(c.req.url)}" />
+<link rel="alternate" type="text/html" href="${x(pageUrl)}" />
+<updated>${iso(updated)}</updated>
+<generator>radar</generator>
+${entries.join("\n")}
+</feed>`;
+  c.header("Cache-Control", "public, max-age=600");
+  return c.body(xml, 200, { "Content-Type": "application/atom+xml; charset=utf-8" });
+});
+
 publicPages.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
   const st = await c.env.DB.prepare("SELECT * FROM sets WHERE public_slug = ?").bind(slug).first<Record<string, string | number | null>>();
@@ -288,43 +376,9 @@ publicPages.get("/:slug", async (c) => {
   const facetValue = facet ? c.req.query("v") ?? "" : "";
   const page = Math.max(1, Math.min(100, Number(c.req.query("page") ?? 1) || 1));
 
-  const where = ["i.subscription_id IN (SELECT m.subscription_id FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id WHERE m.set_id = ? AND s.status != 'archived')", "(i.title_text IS NOT NULL OR i.primary_link IS NOT NULL)"];
-  const args: unknown[] = [st.id];
   const col = (f: SetField) => (f.type === "date" ? "value_date" : f.type === "number" || f.type === "boolean" ? "value_num" : "value_text");
   const v = (f: SetField, agg: "MIN" | "MAX") => `(SELECT ${agg}(${col(f)}) FROM item_field_values WHERE item_id = i.id AND field_id = '${f.id.replace(/[^0-9A-Za-z]/g, "")}')`;
-  const IMAGE = "COALESCE(i.image_url, json_extract(i.detail_json, '$.native.extracted_fields.image'))";
-  const SUMMARY =
-    "COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value'), json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value'))";
-  const cond = (fl: PublicFilter) => filterSql(fl, byKey, today, { image: IMAGE, summary: SUMMARY, col });
-  // 設定された絞り込み条件（すべてのタブにかかる）
-  for (const fl of opts.filters) {
-    const x = cond(fl);
-    if (!x) continue;
-    where.push(x.sql);
-    args.push(...x.args);
-  }
-  // 区分：上から順に見て最初に当てはまった区分の番号（どれにも当てはまらなければ区分の数）
-  let secSql = "";
-  const secArgs: unknown[] = [];
-  if (sections.length) {
-    const whens = sections.map((sec, k) => {
-      const parts = sec.conditions.map(cond).filter((x): x is { sql: string; args: unknown[] } => !!x);
-      for (const p of parts) secArgs.push(...p.args);
-      return `WHEN ${parts.length ? parts.map((p) => `(${p.sql})`).join(" AND ") : "1"} THEN ${k}`;
-    });
-    secSql = `(CASE ${whens.join(" ")} ELSE ${sections.length} END)`;
-    const tabIdx = sections.findIndex((x) => x.id === tab);
-    if (tabIdx >= 0) {
-      where.push(`${secSql} = ${tabIdx}`);
-      args.push(...secArgs);
-    } else {
-      const hidden = sections.flatMap((x, k) => (x.hidden ? [k] : []));
-      if (hidden.length) {
-        where.push(`${secSql} NOT IN (${hidden.join(",")})`);
-        args.push(...secArgs);
-      }
-    }
-  }
+  const { where, args, secSql, secArgs } = scopeSql(st.id as string, opts, byKey, today, tab);
   // 並び順：値のないものは常に後ろ
   const sortSql = (sort: PublicSort) => {
   const agg = sort.dir === "asc" ? "MIN" : "MAX";
@@ -651,6 +705,7 @@ publicPages.get("/:slug", async (c) => {
     c.header("Referrer-Policy", "no-referrer");
     c.header("X-Robots-Tag", "noindex, nofollow");
   }
+  const feedHref = `./${slug}/feed.xml${preview ? `?token=${encodeURIComponent(token)}` : ""}`;
   return c.html(
     layout(
       title,
@@ -703,13 +758,59 @@ publicPages.get("/:slug", async (c) => {
               ${sources.results.map((s) => html`<li><a href="${safeUrl(s.home) ?? safeUrl(s.input_url) ?? "#"}" target="_blank" rel="noopener">${s.title}</a></li>`)}
             </ul>
             <p>各情報の内容は情報源のサイトでご確認ください。このページは各サイトの公開情報を自動で収集・整理しています。</p>
+            <p class="feed-link"><a href="${feedHref}">フィード（Atom）</a>：新しく見つけた情報をフィードリーダーで受け取れます</p>
             <p class="kb-hint"><a href="#" data-kb-help>キーボードショートカット（?）</a></p>
           </footer>
         </main>
       `,
+      feedHref,
     ),
   );
 });
+
+// サイト共通の og:image（og_generic）は、詳細ページから取った画像があればそちらを優先する
+const IMAGE = "COALESCE(CASE WHEN i.image_source IS NOT 'og_generic' THEN i.image_url END, json_extract(i.detail_json, '$.native.extracted_fields.image'), i.image_url)";
+const SUMMARY =
+  "COALESCE(json_extract(i.detail_json, '$.summary.value'), json_extract(i.data_json, '$.summary.value'), json_extract(i.detail_json, '$.content.value'), json_extract(i.data_json, '$.content.value'))";
+
+/** セットの公開ページに出す item の条件（情報源・絞り込み条件・区分）。tab が区分ならその区分だけ、それ以外は非表示の区分を除く */
+function scopeSql(setId: string, opts: ReturnType<typeof normalizePublicOptions>, byKey: Map<string, SetField>, today: string, tab: string) {
+  const sections = opts.sections;
+  const where = ["i.subscription_id IN (SELECT m.subscription_id FROM set_members m JOIN subscriptions s ON s.id = m.subscription_id WHERE m.set_id = ? AND s.status != 'archived')", "(i.title_text IS NOT NULL OR i.primary_link IS NOT NULL)"];
+  const args: unknown[] = [setId];
+  const col = (f: SetField) => (f.type === "date" ? "value_date" : f.type === "number" || f.type === "boolean" ? "value_num" : "value_text");
+  const cond = (fl: PublicFilter) => filterSql(fl, byKey, today, { image: IMAGE, summary: SUMMARY, col });
+  // 設定された絞り込み条件（すべてのタブにかかる）
+  for (const fl of opts.filters) {
+    const x = cond(fl);
+    if (!x) continue;
+    where.push(x.sql);
+    args.push(...x.args);
+  }
+  // 区分：上から順に見て最初に当てはまった区分の番号（どれにも当てはまらなければ区分の数）
+  let secSql = "";
+  const secArgs: unknown[] = [];
+  if (sections.length) {
+    const whens = sections.map((sec, k) => {
+      const parts = sec.conditions.map(cond).filter((x): x is { sql: string; args: unknown[] } => !!x);
+      for (const p of parts) secArgs.push(...p.args);
+      return `WHEN ${parts.length ? parts.map((p) => `(${p.sql})`).join(" AND ") : "1"} THEN ${k}`;
+    });
+    secSql = `(CASE ${whens.join(" ")} ELSE ${sections.length} END)`;
+    const tabIdx = sections.findIndex((x) => x.id === tab);
+    if (tabIdx >= 0) {
+      where.push(`${secSql} = ${tabIdx}`);
+      args.push(...secArgs);
+    } else {
+      const hidden = sections.flatMap((x, k) => (x.hidden ? [k] : []));
+      if (hidden.length) {
+        where.push(`${secSql} NOT IN (${hidden.join(",")})`);
+        args.push(...secArgs);
+      }
+    }
+  }
+  return { where, args, secSql, secArgs };
+}
 
 const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 
@@ -795,7 +896,7 @@ export function notFound(): H {
   return layout("ページが見つかりません", "", html`<main class="wrap"><p class="empty">このページは公開されていないか、存在しません。</p></main>`);
 }
 
-function layout(title: string, description: string, body: H): H {
+function layout(title: string, description: string, body: H, feedUrl?: string): H {
   return html`<!doctype html>
     <html lang="ja">
       <head>
@@ -806,6 +907,7 @@ function layout(title: string, description: string, body: H): H {
         <meta property="og:title" content="${title}" />
         ${description ? html`<meta property="og:description" content="${description}" />` : ""}
         <meta property="og:type" content="website" />
+        ${feedUrl ? html`<link rel="alternate" type="application/atom+xml" title="${title}" href="${feedUrl}" />` : ""}
         <style>
           ${raw(CSS)}
         </style>
@@ -950,7 +1052,8 @@ a.entry-link:hover .entry-title { color: var(--accent); text-decoration: underli
 .kb-cur { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
 tr.kb-cur { outline-offset: -2px; border-radius: 0; }
 .cal-ev.kb-cur { outline-offset: 1px; border-radius: 4px; }
-.kb-hint { font-size: 12px; }
+.kb-hint, .feed-link { font-size: 12px; }
+.feed-link a { color: var(--muted); }
 .kb-hint a { color: var(--muted); }
 @media (hover: none) { .kb-hint { display: none; } }
 .kb-help { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .4); display: flex; align-items: center; justify-content: center; padding: 16px; }

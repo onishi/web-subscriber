@@ -166,8 +166,13 @@ const routes = {
 
 for (let i = 1; i <= 13; i++)
   routes[`/news/${i}`] = () => {
-    const html = page(`News ${i}`, `<article>本文 ${i}</article>`);
-    const og = `<meta content="/img/news-${i}.jpg?a=1&amp;b=2" property="og:image">`;
+    // ogImage: "generic" はサイト共通の og:image と、本文の写真（ロゴ・小さいアイコンつき）
+    const generic = state.ogImage === "generic";
+    const html = page(
+      `News ${i}`,
+      generic ? `<header><img src="/img/header.jpg" width="800"></header><article><img src="/img/logo.png" alt="ロゴ"><img src="/img/dot.gif" width="10" height="10"><p>本文 ${i}</p><img data-src="/img/photo-${i}.jpg" width="640"></article>` : `<article>本文 ${i}</article>`,
+    );
+    const og = generic ? `<meta property="og:image" content="/img/site.png">` : `<meta content="/img/news-${i}.jpg?a=1&amp;b=2" property="og:image">`;
     return { type: "text/html; charset=utf-8", body: state.ogImage ? html.replace("<head>", `<head>${og}`) : html };
   };
 

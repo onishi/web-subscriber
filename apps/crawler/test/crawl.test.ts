@@ -8,7 +8,7 @@ import { settings } from "../src/settings.js";
 import { crawl, type CrawlSink, type PageInfo } from "../src/crawl.js";
 import { parseFeed } from "../src/feed.js";
 import { closeBrowser } from "../src/browser.js";
-import { ImageEnricher, parseOgImage, TRIAL_LIMIT } from "../src/images.js";
+import { ImageEnricher, parseOgImage, parsePageImage, TRIAL_LIMIT } from "../src/images.js";
 import { DetailEnricher } from "../src/detail.js";
 import { runDetailProbe } from "../src/probe.js";
 import { parseRobots, robotsAllows, httpGet, pruneHttpCache } from "../src/net.js";
@@ -317,6 +317,29 @@ describe("item images (og:image)", () => {
     const r = await run(listCfg(), images);
     expect(images.stats()).toMatchObject({ tried: TRIAL_LIMIT, found: 0 });
     expect(r.items.filter((i) => i.image_lookup).every((i) => i.image_lookup!.url === null)).toBe(true);
+  });
+
+  it("parses a feature image from the page body", () => {
+    const h = `<body><header><img src="/h.jpg"></header><main><img src="/logo.svg"><img src="/i.png" width="16"><img src="/sns_icon.png"><img srcset="/big.jpg 2x, /small.jpg 1x"></main></body>`;
+    expect(parsePageImage(h, "https://ex.com/a/")).toBe("https://ex.com/big.jpg");
+    expect(parsePageImage(h, "https://ex.com/a/", new Set(["https://ex.com/big.jpg"]))).toBeNull();
+  });
+
+  it("uses the body image when og:image is the same on every page", async () => {
+    await setState({ ogImage: "generic" });
+    const images = new ImageEnricher({ mode: "on", skip_keys: [] }, { minIntervalMs: 0, respectRobots: true });
+    const r = await run(listCfg(), images);
+    const looked = r.items.filter((i) => i.image_lookup);
+    expect(looked.length).toBe(r.items.length);
+    for (const it of looked) {
+      expect(it.image_lookup!.source).toBe("page_image");
+      expect(it.image_lookup!.url).toMatch(/\/img\/photo-\d+\.jpg$/);
+    }
+    // API が覚えたサイト共通の画像は、1件目から本文の画像にする
+    const known = new ImageEnricher({ mode: "on", skip_keys: [], generic_images: [`${base}/img/site.png`] }, { minIntervalMs: 0, respectRobots: true });
+    const r2 = await run(listCfg(), known);
+    expect(r2.items[0].image_lookup).toMatchObject({ source: "page_image" });
+    await setState({});
   });
 
   it("on: skips items already checked", async () => {

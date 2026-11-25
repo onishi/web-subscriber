@@ -124,7 +124,8 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
     // 画像：配信元データの指定を優先し、なければリンク先の og:image
     const feedImage = itemImageFromData(data) ?? null;
     const ogImage = it.image_lookup?.url ?? null;
-    const image = feedImage ? { url: feedImage, source: "feed" } : ogImage ? { url: ogImage, source: "og_image" } : null;
+    const lookupSource = it.image_lookup?.source ?? "og_image";
+    const image = feedImage ? { url: feedImage, source: "feed" } : ogImage ? { url: ogImage, source: lookupSource } : null;
     const checkedAt = it.image_lookup ? now : null;
     const det = it.detail;
     const detailJson = det?.ok && det.data ? JSON.stringify(det.data) : null;
@@ -176,7 +177,7 @@ export async function ingestPage(env: Env, runId: string, body: PageSubmission):
     if (feedImage) stmts.push(env.DB.prepare("UPDATE items SET image_url = ?, image_source = 'feed' WHERE id = ? AND image_url IS NOT ?").bind(feedImage, ex.id, feedImage));
     else if (it.image_lookup)
       stmts.push(
-        env.DB.prepare("UPDATE items SET image_url = COALESCE(?, image_url), image_source = CASE WHEN ? IS NOT NULL THEN 'og_image' ELSE image_source END, image_checked_at = ? WHERE id = ?").bind(ogImage, ogImage, now, ex.id),
+        env.DB.prepare("UPDATE items SET image_url = COALESCE(?, image_url), image_source = CASE WHEN ? IS NOT NULL THEN ? ELSE image_source END, image_checked_at = ? WHERE id = ?").bind(ogImage, ogImage, lookupSource, now, ex.id),
       );
     if (ex.hash_scheme !== cv.hash_scheme_hash) {
       // ハッシュ定義の変更：更新とはみなさず再計算値で置き換える
