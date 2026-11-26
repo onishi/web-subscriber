@@ -82,3 +82,15 @@ describe("completeYear", () => {
     expect(normalizeValue("date", "2020-11-25", "2026-11-24")).toEqual([{ date: "2020-11-25" }]);
   });
 });
+
+describe("normalizeValue: guessed years", () => {
+  it("replaces a year the text does not mention with the one nearest the reference date", () => {
+    expect(normalizeValue("date", "2020-11-11", "2026-11-26", "11月11日（水）から期間限定で新登場")).toEqual([{ date: "2026-11-11" }]);
+  });
+  it("keeps a year the text states", () => {
+    expect(normalizeValue("date", "2020-11-11", "2026-11-26", "2020年11月11日に発売")).toEqual([{ date: "2020-11-11" }]);
+  });
+  it("keeps full dates when no text is given", () => {
+    expect(normalizeValue("date", "2020-11-11", "2026-11-26")).toEqual([{ date: "2020-11-11" }]);
+  });
+});

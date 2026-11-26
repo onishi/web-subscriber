@@ -90,7 +90,18 @@ export function completeYear(v: string, ref: string): string | null {
   return best;
 }
 
-export function normalizeValue(type: FieldType, v: unknown, refDate?: string): FieldValue[] {
+/**
+ * AI が年付きで返した日付でも、その年が本文に書かれていなければ年は推測（曜日から別の年を選ぶなど）とみなし、
+ * 月日だけ使って基準日に一番近い年で補い直す
+ */
+export function fixGuessedYear(d: string, ref: string | undefined, sourceText: string | undefined): string {
+  if (!ref || sourceText === undefined) return d;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  if (!m || sourceText.includes(m[1])) return d;
+  return completeYear(`${m[2]}-${m[3]}`, ref) ?? d;
+}
+
+export function normalizeValue(type: FieldType, v: unknown, refDate?: string, sourceText?: string): FieldValue[] {
   if (v === null || v === undefined) return [];
   switch (type) {
     case "text": {
@@ -107,7 +118,8 @@ export function normalizeValue(type: FieldType, v: unknown, refDate?: string): F
       return [...seen].slice(0, 50).map((text) => ({ text }));
     }
     case "date": {
-      const d = normalizeDate(v) ?? (typeof v === "string" && refDate ? completeYear(v, refDate) : null);
+      const full = normalizeDate(v);
+      const d = full ? fixGuessedYear(full, refDate, sourceText) : typeof v === "string" && refDate ? completeYear(v, refDate) : null;
       return d ? [{ date: d }] : [];
     }
     case "number": {
@@ -319,7 +331,7 @@ export async function processFieldExtractions(env: Env, opts: { limit?: number; 
         for (const f of fields) {
           if (locks.has(`${row.id}:${f.id}`)) continue;
           // 年のない日付は、公開日（なければ最初に見つけた日。日本時間）に一番近い年で補う
-          normalizeValue(f.type, vals[f.key], jstDate(row.published_sort ?? row.first_seen_at)).forEach((v, ord) =>
+          normalizeValue(f.type, vals[f.key], jstDate(row.published_sort ?? row.first_seen_at), itemText(row)).forEach((v, ord) =>
             stmts.push(
               env.DB.prepare("INSERT INTO item_field_values (item_id, field_id, set_id, ord, value_text, value_num, value_date) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(
                 row.id,
