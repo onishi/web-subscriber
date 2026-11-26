@@ -697,7 +697,13 @@ export class SetupWorkflow extends WorkflowEntrypoint<Env, SetupParams> {
       const rate = detail.page_count ? detail.ok_pages / detail.page_count : 0;
       checks.push({ name: "詳細ページの取得", ok: rate >= 0.8, detail: `${detail.ok_pages}/${detail.page_count} ページで取得` });
       const fill = Object.entries(detail.field_fill);
-      checks.push({ name: "詳細ページのフィールド", ok: fill.some(([k, v]) => (k === "summary" || k === "content") && v >= 0.8), detail: fill.map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(" / ") });
+      // 本文を補うためのルールなら summary / content、画像のためだけのルール（一覧で本文が取れている）なら image が取れていればよい
+      const imageOnly = !!genericOg && !lacksContent(main);
+      checks.push({
+        name: "詳細ページのフィールド",
+        ok: fill.some(([k, v]) => (k === "summary" || k === "content" || (imageOnly && k === "image")) && v >= 0.8),
+        detail: fill.map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(" / "),
+      });
     }
     if (genericOg) {
       // サイト共通の og:image の代わりに、詳細ページの代表画像がページごとに取れているか

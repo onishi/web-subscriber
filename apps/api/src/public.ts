@@ -295,7 +295,8 @@ publicPages.get("/", async (c) => {
 });
 
 /**
- * 公開ページの Atom フィード（/<slug>/feed.xml）。新しく見つけた順に最新 50 件。
+ * 公開ページの Atom フィード（/<slug>/feed.xml）。公開日（なければ見つけた日）の新しい順に 50 件。
+ * 見つけた順にすると、購読を追加したときに過去分（フィードの古い記事など）がまとめて先頭に並ぶため
  * 公開ページと同じ絞り込み条件・区分に従い、?tab=<区分> でその区分だけにできる
  */
 publicPages.get("/:slug/feed.xml", async (c) => {
@@ -314,7 +315,7 @@ publicPages.get("/:slug/feed.xml", async (c) => {
        ${IMAGE} AS image, ${SUMMARY} AS summary,
        COALESCE(json_extract(i.detail_json, '$.published_at.value'), json_extract(i.data_json, '$.published_at.value')) AS published,
        (SELECT COALESCE(s.display_title, s.input_url) FROM subscriptions s WHERE s.id = i.subscription_id) AS source
-     FROM items i WHERE ${where.join(" AND ")} ORDER BY i.first_seen_at DESC, i.id DESC LIMIT 50`,
+     FROM items i WHERE ${where.join(" AND ")} ORDER BY COALESCE(i.published_sort, i.first_seen_at) DESC, i.id DESC LIMIT 50`,
   )
     .bind(...args)
     .all<{ id: string; subscription_id: string; title_text: string | null; primary_link: string | null; first_seen_at: string; last_changed_at: string | null; image: string | null; summary: string | null; published: string | null; source: string | null }>();
