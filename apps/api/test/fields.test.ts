@@ -94,3 +94,19 @@ describe("normalizeValue: guessed years", () => {
     expect(normalizeValue("date", "2020-11-11", "2026-11-26")).toEqual([{ date: "2020-11-11" }]);
   });
 });
+
+describe("yearMentioned", () => {
+  it("reads western, full-width and Japanese era years", async () => {
+    const { yearMentioned } = await import("../src/fields.js");
+    expect(yearMentioned("期 間 令和 ５年 ６月 ２０日 (火)", 2023)).toBe(true);
+    expect(yearMentioned("～令和４年６月19日", 2022)).toBe(true);
+    expect(yearMentioned("令和元年5月", 2019)).toBe(true);
+    expect(yearMentioned("２０２４年度春季", 2024)).toBe(true);
+    expect(yearMentioned("平成30年", 2018)).toBe(true);
+    expect(yearMentioned("11月11日（水）から 2027福袋", 2020)).toBe(false);
+    expect(yearMentioned("令和２年に発見", 2023)).toBe(false);
+  });
+  it("keeps an era year when re-normalising", () => {
+    expect(normalizeValue("date", "2022-06-19", "2026-11-24", "～令和４年６月19日")).toEqual([{ date: "2022-06-19" }]);
+  });
+});

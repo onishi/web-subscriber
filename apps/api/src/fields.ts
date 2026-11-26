@@ -97,8 +97,20 @@ export function completeYear(v: string, ref: string): string | null {
 export function fixGuessedYear(d: string, ref: string | undefined, sourceText: string | undefined): string {
   if (!ref || sourceText === undefined) return d;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
-  if (!m || sourceText.includes(m[1])) return d;
+  if (!m || yearMentioned(sourceText, Number(m[1]))) return d;
   return completeYear(`${m[2]}-${m[3]}`, ref) ?? d;
+}
+
+/** 本文にその年が書かれているか（西暦、全角数字、和暦「令和５年」「令和元年」、数字の間の空白も見る） */
+export function yearMentioned(text: string, year: number): boolean {
+  const t = text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/(?<=[\d和成])\s+(?=[\d元])/g, "");
+  if (new RegExp(`(?<!\\d)${year}(?!\\d)`).test(t)) return true;
+  for (const [era, base] of [["令和", 2018], ["平成", 1988], ["昭和", 1925]] as const) {
+    const n = year - base;
+    if (n < 1) continue;
+    if (new RegExp(`${era}${n === 1 ? "(?:元|0?1)" : `0?${n}`}(?!\\d)`).test(t)) return true;
+  }
+  return false;
 }
 
 export function normalizeValue(type: FieldType, v: unknown, refDate?: string, sourceText?: string): FieldValue[] {
